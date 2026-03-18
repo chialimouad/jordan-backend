@@ -1,7 +1,9 @@
 import {
     Controller,
     Get,
+    Post,
     Patch,
+    Put,
     Delete,
     Param,
     Query,
@@ -19,8 +21,10 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole, UserStatus } from '../../database/entities/user.entity';
 import { ReportStatus } from '../../database/entities/report.entity';
 import { PhotoModerationStatus } from '../../database/entities/photo.entity';
+import { LikeType } from '../../database/entities/like.entity';
+import { TicketStatus } from '../../database/entities/support-ticket.entity';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsEmail, IsBoolean, MinLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 class UpdateUserStatusDto {
@@ -51,6 +55,28 @@ class ModeratePhotoDto {
     moderationNote?: string;
 }
 
+class CreateUserDto {
+    @ApiProperty() @IsEmail() email: string;
+    @ApiProperty() @IsString() @MinLength(6) password: string;
+    @ApiProperty() @IsString() firstName: string;
+    @ApiProperty() @IsString() lastName: string;
+    @ApiPropertyOptional({ enum: UserRole }) @IsOptional() @IsEnum(UserRole) role?: UserRole;
+    @ApiPropertyOptional({ enum: UserStatus }) @IsOptional() @IsEnum(UserStatus) status?: UserStatus;
+}
+
+class SendNotificationDto {
+    @ApiPropertyOptional() @IsOptional() @IsString() userId?: string;
+    @ApiProperty() @IsString() title: string;
+    @ApiProperty() @IsString() body: string;
+    @ApiPropertyOptional() @IsOptional() @IsString() type?: string;
+    @ApiPropertyOptional() @IsOptional() @IsBoolean() broadcast?: boolean;
+}
+
+class ReplyTicketDto {
+    @ApiProperty() @IsString() reply: string;
+    @ApiPropertyOptional({ enum: TicketStatus }) @IsOptional() @IsEnum(TicketStatus) status?: TicketStatus;
+}
+
 @ApiTags('admin')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -62,18 +88,39 @@ export class AdminController {
     // ─── USERS ──────────────────────────────────────────────
 
     @Get('users')
-    @ApiOperation({ summary: 'List all users (admin only)' })
+    @ApiOperation({ summary: 'List all users with search and filters' })
     async getUsers(
         @Query() pagination: PaginationDto,
         @Query('status') status?: UserStatus,
+        @Query('search') search?: string,
+        @Query('role') role?: UserRole,
+        @Query('plan') plan?: string,
     ) {
-        return this.adminService.getUsers(pagination, status);
+        return this.adminService.getUsers(pagination, status, search, role, plan);
+    }
+
+    @Post('users')
+    @ApiOperation({ summary: 'Create a new user (admin)' })
+    async createUser(@Body() dto: CreateUserDto) {
+        return this.adminService.createUser(dto);
     }
 
     @Get('users/:id')
     @ApiOperation({ summary: 'Get user detail with profile, photos, subscription' })
     async getUserDetail(@Param('id') userId: string) {
         return this.adminService.getUserDetail(userId);
+    }
+
+    @Get('users/:id/activity')
+    @ApiOperation({ summary: 'Get per-user activity stats (likes, matches, messages, etc.)' })
+    async getUserActivity(@Param('id') userId: string) {
+        return this.adminService.getUserActivity(userId);
+    }
+
+    @Put('users/:id')
+    @ApiOperation({ summary: 'Update user fields' })
+    async updateUser(@Param('id') userId: string, @Body() dto: any) {
+        return this.adminService.updateUser(userId, dto);
     }
 
     @Patch('users/:id/status')
@@ -90,6 +137,42 @@ export class AdminController {
     @ApiOperation({ summary: 'Soft-delete a user account' })
     async deleteUser(@Param('id') userId: string) {
         await this.adminService.deleteUserAccount(userId);
+    }
+
+    // ─── SWIPES / ACTIVITY ──────────────────────────────────
+
+    @Get('swipes')
+    @ApiOperation({ summary: 'View all swipes (who liked/disliked/complimented who)' })
+    async getSwipes(
+        @Query() pagination: PaginationDto,
+        @Query('type') type?: LikeType,
+    ) {
+        return this.adminService.getSwipes(pagination, type);
+    }
+
+    // ─── MATCHES ────────────────────────────────────────────
+
+    @Get('matches')
+    @ApiOperation({ summary: 'View all matches' })
+    async getMatches(@Query() pagination: PaginationDto) {
+        return this.adminService.getMatches(pagination);
+    }
+
+    // ─── CONVERSATIONS ──────────────────────────────────────
+
+    @Get('conversations')
+    @ApiOperation({ summary: 'View all conversations' })
+    async getConversations(@Query() pagination: PaginationDto) {
+        return this.adminService.getConversations(pagination);
+    }
+
+    @Get('conversations/:id/messages')
+    @ApiOperation({ summary: 'View messages in a conversation' })
+    async getConversationMessages(
+        @Param('id') conversationId: string,
+        @Query() pagination: PaginationDto,
+    ) {
+        return this.adminService.getConversationMessages(conversationId, pagination);
     }
 
     // ─── REPORTS ────────────────────────────────────────────
@@ -110,12 +193,7 @@ export class AdminController {
         @Param('id') reportId: string,
         @Body() dto: ResolveReportDto,
     ) {
-        return this.adminService.resolveReport(
-            reportId,
-            adminId,
-            dto.status,
-            dto.moderatorNote,
-        );
+        return this.adminService.resolveReport(reportId, adminId, dto.status, dto.moderatorNote);
     }
 
     // ─── PHOTO MODERATION ───────────────────────────────────
@@ -128,11 +206,83 @@ export class AdminController {
 
     @Patch('photos/:id/moderate')
     @ApiOperation({ summary: 'Approve or reject a photo' })
-    async moderatePhoto(
-        @Param('id') photoId: string,
-        @Body() dto: ModeratePhotoDto,
-    ) {
+    async moderatePhoto(@Param('id') photoId: string, @Body() dto: ModeratePhotoDto) {
         return this.adminService.moderatePhoto(photoId, dto.status, dto.moderationNote);
+    }
+
+    // ─── NOTIFICATIONS ──────────────────────────────────────
+
+    @Post('notifications/send')
+    @ApiOperation({ summary: 'Send notification to user or broadcast to all' })
+    async sendNotification(@Body() dto: SendNotificationDto) {
+        return this.adminService.sendNotification(dto);
+    }
+
+    // ─── SUPPORT TICKETS ────────────────────────────────────
+
+    @Get('tickets')
+    @ApiOperation({ summary: 'List support tickets' })
+    async getTickets(
+        @Query() pagination: PaginationDto,
+        @Query('status') status?: TicketStatus,
+    ) {
+        return this.adminService.getTickets(pagination, status);
+    }
+
+    @Patch('tickets/:id/reply')
+    @ApiOperation({ summary: 'Reply to a support ticket' })
+    async replyToTicket(
+        @CurrentUser('sub') adminId: string,
+        @Param('id') ticketId: string,
+        @Body() dto: ReplyTicketDto,
+    ) {
+        return this.adminService.replyToTicket(ticketId, adminId, dto.reply, dto.status);
+    }
+
+    // ─── ADS ────────────────────────────────────────────────
+
+    @Get('ads')
+    @ApiOperation({ summary: 'List all ads' })
+    async getAds() {
+        return this.adminService.getAds();
+    }
+
+    @Post('ads')
+    @ApiOperation({ summary: 'Create a new ad' })
+    async createAd(@Body() dto: any) {
+        return this.adminService.createAd(dto);
+    }
+
+    @Patch('ads/:id')
+    @ApiOperation({ summary: 'Update an ad' })
+    async updateAd(@Param('id') id: string, @Body() dto: any) {
+        return this.adminService.updateAd(id, dto);
+    }
+
+    @Delete('ads/:id')
+    @HttpCode(HttpStatus.NO_CONTENT)
+    @ApiOperation({ summary: 'Delete an ad' })
+    async deleteAd(@Param('id') id: string) {
+        await this.adminService.deleteAd(id);
+    }
+
+    // ─── BOOSTS ─────────────────────────────────────────────
+
+    @Get('boosts')
+    @ApiOperation({ summary: 'List all profile boosts' })
+    async getBoosts(@Query() pagination: PaginationDto) {
+        return this.adminService.getBoosts(pagination);
+    }
+
+    // ─── SUBSCRIPTIONS ──────────────────────────────────────
+
+    @Get('subscriptions')
+    @ApiOperation({ summary: 'List all subscriptions with plan breakdown' })
+    async getSubscriptions(
+        @Query() pagination: PaginationDto,
+        @Query('plan') plan?: string,
+    ) {
+        return this.adminService.getSubscriptions(pagination, plan);
     }
 
     // ─── ANALYTICS ──────────────────────────────────────────

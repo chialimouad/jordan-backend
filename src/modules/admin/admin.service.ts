@@ -1,14 +1,21 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User, UserStatus } from '../../database/entities/user.entity';
+import { Repository, ILike } from 'typeorm';
+import * as bcrypt from 'bcrypt';
+import { User, UserRole, UserStatus } from '../../database/entities/user.entity';
 import { Report, ReportStatus } from '../../database/entities/report.entity';
 import { Profile } from '../../database/entities/profile.entity';
 import { Match } from '../../database/entities/match.entity';
 import { Subscription, SubscriptionPlan } from '../../database/entities/subscription.entity';
 import { Photo, PhotoModerationStatus } from '../../database/entities/photo.entity';
-import { Like } from '../../database/entities/like.entity';
+import { Like, LikeType } from '../../database/entities/like.entity';
 import { Message } from '../../database/entities/message.entity';
+import { Boost } from '../../database/entities/boost.entity';
+import { Notification, NotificationType } from '../../database/entities/notification.entity';
+import { Conversation } from '../../database/entities/conversation.entity';
+import { SupportTicket, TicketStatus } from '../../database/entities/support-ticket.entity';
+import { Ad } from '../../database/entities/ad.entity';
+import { BlockedUser } from '../../database/entities/blocked-user.entity';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
 @Injectable()
@@ -32,21 +39,42 @@ export class AdminService {
         private readonly likeRepository: Repository<Like>,
         @InjectRepository(Message)
         private readonly messageRepository: Repository<Message>,
+        @InjectRepository(Boost)
+        private readonly boostRepository: Repository<Boost>,
+        @InjectRepository(Notification)
+        private readonly notificationRepository: Repository<Notification>,
+        @InjectRepository(Conversation)
+        private readonly conversationRepository: Repository<Conversation>,
+        @InjectRepository(SupportTicket)
+        private readonly ticketRepository: Repository<SupportTicket>,
+        @InjectRepository(Ad)
+        private readonly adRepository: Repository<Ad>,
+        @InjectRepository(BlockedUser)
+        private readonly blockedUserRepository: Repository<BlockedUser>,
     ) { }
 
     // ─── USER MANAGEMENT ────────────────────────────────────
 
-    async getUsers(pagination: PaginationDto, status?: UserStatus) {
-        const where: any = {};
-        if (status) where.status = status;
+    async getUsers(pagination: PaginationDto, status?: UserStatus, search?: string, role?: UserRole, plan?: string) {
+        const qb = this.userRepository.createQueryBuilder('user');
 
-        const [users, total] = await this.userRepository.findAndCount({
-            where,
-            order: { createdAt: 'DESC' },
-            skip: pagination.skip,
-            take: pagination.limit,
-        });
+        if (status) qb.andWhere('user.status = :status', { status });
+        if (role) qb.andWhere('user.role = :role', { role });
+        if (search) {
+            qb.andWhere(
+                '(user.firstName ILIKE :search OR user.lastName ILIKE :search OR user.email ILIKE :search OR user.username ILIKE :search)',
+                { search: `%${search}%` },
+            );
+        }
+        if (plan) {
+            qb.innerJoin('subscriptions', 'sub', 'sub.userId = user.id AND sub.plan = :plan AND sub.status = :subStatus', { plan, subStatus: 'active' });
+        }
 
+        qb.orderBy('user.createdAt', 'DESC')
+            .skip(pagination.skip)
+            .take(pagination.limit);
+
+        const [users, total] = await qb.getManyAndCount();
         return { users, total, page: pagination.page, limit: pagination.limit };
     }
 
@@ -59,6 +87,287 @@ export class AdminService {
         const subscription = await this.subscriptionRepository.findOne({ where: { userId } });
 
         return { user, profile, photos, subscription };
+    }
+
+    // ─── CREATE USER ──────────────────────────────────────────
+
+    async createUser(dto: {
+        email: string; password: string; firstName: string; lastName: string;
+        role?: UserRole; status?: UserStatus;
+    }) {
+        const exists = await this.userRepository.findOne({ where: { email: dto.email } });
+        if (exists) throw new BadRequestException('Email already exists');
+
+        const salt = await bcrypt.genSalt(12);
+        const hashedPassword = await bcrypt.hash(dto.password, salt);
+
+        const user = this.userRepository.create({
+            email: dto.email,
+            password: hashedPassword,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            role: dto.role || UserRole.USER,
+            status: dto.status || UserStatus.ACTIVE,
+            emailVerified: true,
+            trustScore: 100,
+            notificationsEnabled: true,
+            matchNotifications: true,
+            messageNotifications: true,
+            likeNotifications: true,
+        });
+
+        await this.userRepository.save(user);
+        this.logger.log(`Admin created user: ${dto.email}`);
+        return user;
+    }
+
+    // ─── UPDATE USER ──────────────────────────────────────────
+
+    async updateUser(userId: string, dto: Partial<User>) {
+        const user = await this.userRepository.findOne({ where: { id: userId } });
+        if (!user) throw new NotFoundException('User not found');
+
+        delete (dto as any).password;
+        delete (dto as any).id;
+        Object.assign(user, dto);
+        return this.userRepository.save(user);
+    }
+
+    // ─── PER-USER ACTIVITY ────────────────────────────────────
+
+    async getUserActivity(userId: string) {
+        const [
+            likesGiven, likesReceived, superLikesGiven, superLikesReceived,
+            complimentsGiven, complimentsReceived, passesGiven,
+            matchesCount, messagesCount, reportsCount, photosCount,
+            boostsCount,
+        ] = await Promise.all([
+            this.likeRepository.count({ where: { likerId: userId, type: LikeType.LIKE } }),
+            this.likeRepository.count({ where: { likedId: userId, type: LikeType.LIKE } }),
+            this.likeRepository.count({ where: { likerId: userId, type: LikeType.SUPER_LIKE } }),
+            this.likeRepository.count({ where: { likedId: userId, type: LikeType.SUPER_LIKE } }),
+            this.likeRepository.count({ where: { likerId: userId, type: LikeType.COMPLIMENT } }),
+            this.likeRepository.count({ where: { likedId: userId, type: LikeType.COMPLIMENT } }),
+            this.likeRepository.count({ where: { likerId: userId, type: LikeType.PASS } }),
+            this.matchRepository.createQueryBuilder('m')
+                .where('m.user1Id = :uid OR m.user2Id = :uid', { uid: userId }).getCount(),
+            this.messageRepository.count({ where: { senderId: userId } }),
+            this.reportRepository.count({ where: { reportedId: userId } }),
+            this.photoRepository.count({ where: { userId } }),
+            this.boostRepository.count({ where: { userId } }),
+        ]);
+
+        const subscription = await this.subscriptionRepository.findOne({ where: { userId } });
+        const boost = await this.boostRepository.findOne({
+            where: { userId, isActive: true },
+            order: { createdAt: 'DESC' },
+        });
+        const blockedCount = await this.blockedUserRepository.count({ where: { blockerId: userId } });
+        const blockedByCount = await this.blockedUserRepository.count({ where: { blockedId: userId } });
+
+        return {
+            likes: { given: likesGiven, received: likesReceived },
+            superLikes: { given: superLikesGiven, received: superLikesReceived },
+            compliments: { given: complimentsGiven, received: complimentsReceived },
+            passes: passesGiven,
+            matches: matchesCount,
+            messages: messagesCount,
+            reports: reportsCount,
+            photos: photosCount,
+            boosts: boostsCount,
+            blocked: blockedCount,
+            blockedBy: blockedByCount,
+            subscription: subscription || null,
+            activeBoost: boost || null,
+        };
+    }
+
+    // ─── SWIPES / ACTIVITY FEED ───────────────────────────────
+
+    async getSwipes(pagination: PaginationDto, type?: LikeType) {
+        const where: any = {};
+        if (type) where.type = type;
+
+        const [swipes, total] = await this.likeRepository.findAndCount({
+            where,
+            relations: ['liker', 'liked'],
+            order: { createdAt: 'DESC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+
+        return { swipes, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    // ─── MATCHES (ADMIN VIEW) ─────────────────────────────────
+
+    async getMatches(pagination: PaginationDto) {
+        const [matches, total] = await this.matchRepository.findAndCount({
+            relations: ['user1', 'user2'],
+            order: { matchedAt: 'DESC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+        return { matches, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    // ─── CONVERSATIONS (ADMIN VIEW) ───────────────────────────
+
+    async getConversations(pagination: PaginationDto) {
+        const [conversations, total] = await this.conversationRepository.findAndCount({
+            relations: ['user1', 'user2'],
+            order: { lastMessageAt: 'DESC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+        return { conversations, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    async getConversationMessages(conversationId: string, pagination: PaginationDto) {
+        const [messages, total] = await this.messageRepository.findAndCount({
+            where: { conversationId },
+            relations: ['sender'],
+            order: { createdAt: 'ASC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+        return { messages, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    // ─── SEND NOTIFICATION ────────────────────────────────────
+
+    async sendNotification(dto: {
+        userId?: string; title: string; body: string; type?: string; broadcast?: boolean;
+    }) {
+        if (dto.broadcast) {
+            const users = await this.userRepository.find({
+                where: { status: UserStatus.ACTIVE },
+                select: ['id'],
+            });
+            const notifications = users.map(u =>
+                this.notificationRepository.create({
+                    userId: u.id,
+                    type: (dto.type as NotificationType) || NotificationType.SYSTEM,
+                    title: dto.title,
+                    body: dto.body,
+                }),
+            );
+            await this.notificationRepository.save(notifications);
+            return { sent: notifications.length, broadcast: true };
+        }
+
+        if (!dto.userId) throw new BadRequestException('userId required for non-broadcast');
+        const notif = this.notificationRepository.create({
+            userId: dto.userId,
+            type: (dto.type as NotificationType) || NotificationType.SYSTEM,
+            title: dto.title,
+            body: dto.body,
+        });
+        await this.notificationRepository.save(notif);
+        return { sent: 1, notification: notif };
+    }
+
+    // ─── SUPPORT TICKETS ──────────────────────────────────────
+
+    async getTickets(pagination: PaginationDto, status?: TicketStatus) {
+        const where: any = {};
+        if (status) where.status = status;
+
+        const [tickets, total] = await this.ticketRepository.findAndCount({
+            where,
+            relations: ['user', 'assignedTo'],
+            order: { createdAt: 'DESC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+        return { tickets, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    async replyToTicket(ticketId: string, adminId: string, reply: string, newStatus?: TicketStatus) {
+        const ticket = await this.ticketRepository.findOne({ where: { id: ticketId } });
+        if (!ticket) throw new NotFoundException('Ticket not found');
+
+        ticket.adminReply = reply;
+        ticket.assignedToId = adminId;
+        ticket.repliedAt = new Date();
+        ticket.status = newStatus || TicketStatus.RESOLVED;
+
+        await this.ticketRepository.save(ticket);
+
+        // Also send notification to user
+        await this.notificationRepository.save(
+            this.notificationRepository.create({
+                userId: ticket.userId,
+                type: NotificationType.SYSTEM,
+                title: 'Support Reply',
+                body: `Your ticket "${ticket.subject}" has been answered.`,
+            }),
+        );
+
+        return ticket;
+    }
+
+    async createTicket(userId: string, subject: string, message: string) {
+        const ticket = this.ticketRepository.create({ userId, subject, message });
+        return this.ticketRepository.save(ticket);
+    }
+
+    // ─── ADS MANAGEMENT ───────────────────────────────────────
+
+    async getAds() {
+        return this.adRepository.find({ order: { createdAt: 'DESC' } });
+    }
+
+    async createAd(dto: Partial<Ad>) {
+        const ad = this.adRepository.create(dto);
+        return this.adRepository.save(ad);
+    }
+
+    async updateAd(id: string, dto: Partial<Ad>) {
+        const ad = await this.adRepository.findOne({ where: { id } });
+        if (!ad) throw new NotFoundException('Ad not found');
+        Object.assign(ad, dto);
+        return this.adRepository.save(ad);
+    }
+
+    async deleteAd(id: string) {
+        const res = await this.adRepository.delete(id);
+        if (res.affected === 0) throw new NotFoundException('Ad not found');
+    }
+
+    // ─── BOOSTS ───────────────────────────────────────────────
+
+    async getBoosts(pagination: PaginationDto) {
+        const [boosts, total] = await this.boostRepository.findAndCount({
+            relations: ['user'],
+            order: { createdAt: 'DESC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+        return { boosts, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    // ─── SUBSCRIPTIONS OVERVIEW ───────────────────────────────
+
+    async getSubscriptions(pagination: PaginationDto, plan?: string) {
+        const where: any = {};
+        if (plan) where.plan = plan;
+
+        const [subscriptions, total] = await this.subscriptionRepository.findAndCount({
+            where,
+            relations: ['user'],
+            order: { createdAt: 'DESC' },
+            skip: pagination.skip,
+            take: pagination.limit,
+        });
+
+        const [freeCount, premiumCount, goldCount] = await Promise.all([
+            this.subscriptionRepository.count({ where: { plan: SubscriptionPlan.FREE } }),
+            this.subscriptionRepository.count({ where: { plan: SubscriptionPlan.PREMIUM } }),
+            this.subscriptionRepository.count({ where: { plan: SubscriptionPlan.GOLD } }),
+        ]);
+
+        return { subscriptions, total, page: pagination.page, limit: pagination.limit, counts: { free: freeCount, premium: premiumCount, gold: goldCount } };
     }
 
     async updateUserStatus(userId: string, status: UserStatus): Promise<User | null> {
