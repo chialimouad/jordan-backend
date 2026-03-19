@@ -2,6 +2,7 @@ import {
     WebSocketGateway,
     WebSocketServer,
     SubscribeMessage,
+    OnGatewayInit,
     OnGatewayConnection,
     OnGatewayDisconnect,
     ConnectedSocket,
@@ -9,16 +10,23 @@ import {
 } from '@nestjs/websockets';
 import { Logger, Inject, Optional } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { createAdapter } from '@socket.io/redis-adapter';
 import { ChatService } from './chat.service';
 import { RedisService } from '../redis/redis.service';
 import { TrustSafetyService } from '../trust-safety/trust-safety.service';
 import { MessageType } from '../../database/entities/message.entity';
 
 @WebSocketGateway({
-    cors: { origin: '*' },
-    namespace: '/chat',
+    cors: {
+        origin: process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== '*'
+            ? process.env.CORS_ORIGIN.split(',')
+            : true,
+        credentials: true,
+    },
 })
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
     @WebSocketServer()
     server: Server;
 
@@ -27,16 +35,78 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     constructor(
         private readonly chatService: ChatService,
         private readonly redisService: RedisService,
+        private readonly jwtService: JwtService,
+        private readonly configService: ConfigService,
         @Optional() @Inject(TrustSafetyService)
         private readonly trustSafetyService?: TrustSafetyService,
     ) { }
+
+    // ─── REDIS ADAPTER FOR HORIZONTAL SCALING ────────────────
+
+    afterInit(server: Server) {
+        if (this.redisService.connected) {
+            try {
+                const pubClient = this.redisService.getClient();
+                const subClient = this.redisService.createDuplicate();
+                server.adapter(createAdapter(pubClient, subClient) as any);
+                this.logger.log('Socket.IO Redis adapter attached — horizontal scaling enabled');
+            } catch (err) {
+                this.logger.error('Failed to attach Redis adapter, running single-instance', err);
+            }
+        } else {
+            this.logger.warn('Redis not connected — Socket.IO running single-instance (no horizontal scaling)');
+        }
+    }
 
     // ─── CONNECTION LIFECYCLE ───────────────────────────────
 
     async handleConnection(client: Socket) {
         try {
-            const userId = client.handshake.query.userId as string;
+            // Extract JWT from auth object (sent by Flutter client)
+            const token = client.handshake.auth?.token as string;
+            if (!token) {
+                this.logger.warn('Socket connection rejected: no token provided');
+                client.emit('error', { message: 'Authentication required' });
+                client.disconnect();
+                return;
+            }
+
+            // Verify the JWT and extract userId from payload
+            let payload: any;
+            try {
+                payload = this.jwtService.verify(token, {
+                    secret: this.configService.get<string>('jwt.secret'),
+                });
+            } catch (jwtError) {
+                this.logger.warn(`Socket connection rejected: invalid token — ${(jwtError as Error).message}`);
+                client.emit('error', { message: 'Invalid or expired token' });
+                client.disconnect();
+                return;
+            }
+
+            const userId = payload.sub;
             if (!userId) {
+                this.logger.warn('Socket connection rejected: token has no sub claim');
+                client.disconnect();
+                return;
+            }
+
+            // Check if token is blacklisted (logout / session revocation)
+            if (payload.jti) {
+                const isBlacklisted = await this.redisService.isTokenBlacklisted(payload.jti);
+                if (isBlacklisted) {
+                    this.logger.warn(`Socket connection rejected: token ${payload.jti} is blacklisted`);
+                    client.emit('error', { message: 'Token has been revoked' });
+                    client.disconnect();
+                    return;
+                }
+            }
+
+            // Check global session revocation
+            const revokedAt = await this.redisService.getUserRevokedAt(userId);
+            if (revokedAt && payload.iat && payload.iat * 1000 < revokedAt) {
+                this.logger.warn(`Socket rejected: token issued before session revocation for ${userId}`);
+                client.emit('error', { message: 'Session has been revoked. Please re-login.' });
                 client.disconnect();
                 return;
             }
@@ -45,9 +115,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             await this.redisService.setUserOnline(userId);
             client.join(`user:${userId}`);
 
-            this.logger.log(`Client connected: ${userId}`);
-            this.server.emit('userOnline', { userId, timestamp: new Date() });
+            this.logger.log(`Client connected (JWT verified): ${userId}`);
+            // Emit presence only to user's own room (privacy — not broadcast to all)
+            this.server.to(`user:${userId}`).emit('userOnline', { userId, timestamp: new Date() });
         } catch (error) {
+            this.logger.error(`Socket connection error: ${(error as Error).message}`);
             client.disconnect();
         }
     }
@@ -58,7 +130,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             await this.redisService.setUserOffline(userId);
             // Store last seen timestamp
             await this.redisService.set(`lastSeen:${userId}`, new Date().toISOString(), 86400 * 30);
-            this.server.emit('userOffline', { userId, lastSeen: new Date() });
+            this.server.to(`user:${userId}`).emit('userOffline', { userId, lastSeen: new Date() });
             this.logger.log(`Client disconnected: ${userId}`);
         }
     }
@@ -70,10 +142,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         @ConnectedSocket() client: Socket,
         @MessageBody() payload: { conversationId: string },
     ) {
+        const userId = client.data.userId;
+
+        // Verify the user is actually a participant in this conversation
+        try {
+            await this.chatService.getMessages(userId, payload.conversationId, { page: 1, limit: 1 } as any);
+        } catch {
+            this.logger.warn(`User ${userId} tried to join conversation ${payload.conversationId} they don't belong to`);
+            return { success: false, error: 'Not a participant of this conversation' };
+        }
+
         client.join(`conversation:${payload.conversationId}`);
 
         // Auto-mark messages as delivered when joining
-        const userId = client.data.userId;
         try {
             await this.chatService.markAsDelivered(userId, payload.conversationId);
             client.to(`conversation:${payload.conversationId}`).emit('messagesDelivered', {
@@ -163,7 +244,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         @MessageBody() payload: { conversationId: string },
     ) {
         const senderId = client.data.userId;
-        client.to(`conversation:${payload.conversationId}`).emit('userTyping', {
+        client.to(`conversation:${payload.conversationId}`).emit('typing', {
             conversationId: payload.conversationId,
             userId: senderId,
         });
@@ -191,11 +272,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const userId = client.data.userId;
         try {
             await this.chatService.markAsRead(userId, payload.conversationId);
-            client.to(`conversation:${payload.conversationId}`).emit('messagesRead', {
+            // Emit both event names for backward compatibility
+            const readPayload = {
                 conversationId: payload.conversationId,
                 readBy: userId,
                 readAt: new Date(),
-            });
+            };
+            client.to(`conversation:${payload.conversationId}`).emit('messagesRead', readPayload);
             return { success: true };
         } catch (error) {
             return { success: false, error: error.message };

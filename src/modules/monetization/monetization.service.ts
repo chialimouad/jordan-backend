@@ -15,18 +15,42 @@ export enum FeatureFlag {
     READ_RECEIPTS = 'read_receipts',
     PRIORITY_MATCHING = 'priority_matching',
     REWIND = 'rewind',
+    INVISIBLE_MODE = 'invisible_mode',
+    COMPLIMENT_CREDITS = 'compliment_credits',
+    REMATCH = 'rematch',
+    PREMIUM_BADGE = 'premium_badge',
+    HIDE_ADS = 'hide_ads',
+    PASSPORT_MODE = 'passport_mode',
+    IMPROVED_VISITS = 'improved_visits',
 }
 
+/**
+ * PDF Spec:
+ * FREE: filter age & distance, 10 likes/day, 2 rewinds/month, basic filter
+ * PREMIUM: unlimited likes, see who likes you, free daily compliment credit,
+ *   4 weekly profile boosts, unlimited rewind, request rematch, improve daily visits,
+ *   invisible mode, premium badge, hide ads, passport mode
+ * GOLD (Elite - future): all premium + video chat
+ */
 const PLAN_FEATURES: Record<SubscriptionPlan, FeatureFlag[]> = {
     [SubscriptionPlan.FREE]: [
-        FeatureFlag.SUPER_LIKE, // limited to 1/day
+        FeatureFlag.PASSPORT_MODE, // available for now, will move to premium later
     ],
     [SubscriptionPlan.PREMIUM]: [
         FeatureFlag.UNLIMITED_LIKES,
         FeatureFlag.ADVANCED_FILTERS,
+        FeatureFlag.SEE_WHO_LIKED,
         FeatureFlag.SUPER_LIKE,
         FeatureFlag.READ_RECEIPTS,
         FeatureFlag.REWIND,
+        FeatureFlag.COMPLIMENT_CREDITS,
+        FeatureFlag.PROFILE_BOOST,
+        FeatureFlag.REMATCH,
+        FeatureFlag.IMPROVED_VISITS,
+        FeatureFlag.INVISIBLE_MODE,
+        FeatureFlag.PREMIUM_BADGE,
+        FeatureFlag.HIDE_ADS,
+        FeatureFlag.PASSPORT_MODE,
     ],
     [SubscriptionPlan.GOLD]: [
         FeatureFlag.UNLIMITED_LIKES,
@@ -37,13 +61,26 @@ const PLAN_FEATURES: Record<SubscriptionPlan, FeatureFlag[]> = {
         FeatureFlag.READ_RECEIPTS,
         FeatureFlag.PRIORITY_MATCHING,
         FeatureFlag.REWIND,
+        FeatureFlag.INVISIBLE_MODE,
+        FeatureFlag.COMPLIMENT_CREDITS,
+        FeatureFlag.REMATCH,
+        FeatureFlag.PREMIUM_BADGE,
+        FeatureFlag.HIDE_ADS,
+        FeatureFlag.PASSPORT_MODE,
+        FeatureFlag.IMPROVED_VISITS,
     ],
 };
 
-const DAILY_LIMITS: Record<SubscriptionPlan, { likes: number; superLikes: number }> = {
-    [SubscriptionPlan.FREE]: { likes: 25, superLikes: 1 },
-    [SubscriptionPlan.PREMIUM]: { likes: -1, superLikes: 5 }, // -1 = unlimited
-    [SubscriptionPlan.GOLD]: { likes: -1, superLikes: -1 },
+const DAILY_LIMITS: Record<SubscriptionPlan, { likes: number; superLikes: number; complimentCredits: number }> = {
+    [SubscriptionPlan.FREE]: { likes: 10, superLikes: 0, complimentCredits: 0 },
+    [SubscriptionPlan.PREMIUM]: { likes: -1, superLikes: 5, complimentCredits: 1 }, // -1 = unlimited
+    [SubscriptionPlan.GOLD]: { likes: -1, superLikes: -1, complimentCredits: 3 },
+};
+
+const MONTHLY_LIMITS: Record<SubscriptionPlan, { rewinds: number; weeklyBoosts: number }> = {
+    [SubscriptionPlan.FREE]: { rewinds: 2, weeklyBoosts: 0 },
+    [SubscriptionPlan.PREMIUM]: { rewinds: -1, weeklyBoosts: 4 }, // -1 = unlimited
+    [SubscriptionPlan.GOLD]: { rewinds: -1, weeklyBoosts: -1 },
 };
 
 @Injectable()
@@ -145,9 +182,14 @@ export class MonetizationService {
 
     // ─── DAILY LIMITS ───────────────────────────────────────
 
-    async getDailyLimits(userId: string): Promise<{ likes: number; superLikes: number }> {
+    async getDailyLimits(userId: string): Promise<{ likes: number; superLikes: number; complimentCredits: number }> {
         const plan = await this.getUserPlan(userId);
         return DAILY_LIMITS[plan] || DAILY_LIMITS[SubscriptionPlan.FREE];
+    }
+
+    async getMonthlyLimits(userId: string): Promise<{ rewinds: number; weeklyBoosts: number }> {
+        const plan = await this.getUserPlan(userId);
+        return MONTHLY_LIMITS[plan] || MONTHLY_LIMITS[SubscriptionPlan.FREE];
     }
 
     async getRemainingLikes(userId: string): Promise<{ remaining: number; limit: number; isUnlimited: boolean }> {
@@ -165,6 +207,85 @@ export class MonetizationService {
             limit: limits.likes,
             isUnlimited: false,
         };
+    }
+
+    // ─── REWIND TRACKING ─────────────────────────────────────
+
+    async canRewind(userId: string): Promise<boolean> {
+        const monthlyLimits = await this.getMonthlyLimits(userId);
+        if (monthlyLimits.rewinds === -1) return true; // unlimited
+
+        const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+        const usedKey = `rewinds_used:${userId}:${month}`;
+        const used = parseInt(await this.redisService.get(usedKey) || '0', 10);
+        return used < monthlyLimits.rewinds;
+    }
+
+    async useRewind(userId: string): Promise<{ success: boolean; remaining: number }> {
+        const monthlyLimits = await this.getMonthlyLimits(userId);
+
+        if (monthlyLimits.rewinds === -1) {
+            return { success: true, remaining: -1 };
+        }
+
+        const month = new Date().toISOString().slice(0, 7);
+        const usedKey = `rewinds_used:${userId}:${month}`;
+        const used = parseInt(await this.redisService.get(usedKey) || '0', 10);
+
+        if (used >= monthlyLimits.rewinds) {
+            throw new BadRequestException('No rewinds remaining this month. Upgrade to Premium for unlimited rewinds.');
+        }
+
+        await this.redisService.set(usedKey, String(used + 1), 31 * 24 * 3600); // 31 days TTL
+        return { success: true, remaining: monthlyLimits.rewinds - used - 1 };
+    }
+
+    // ─── COMPLIMENT CREDITS ──────────────────────────────────
+
+    async getRemainingCompliments(userId: string): Promise<{ remaining: number; limit: number; isUnlimited: boolean }> {
+        const limits = await this.getDailyLimits(userId);
+        if (limits.complimentCredits === 0) {
+            return { remaining: 0, limit: 0, isUnlimited: false };
+        }
+        if (limits.complimentCredits === -1) {
+            return { remaining: -1, limit: -1, isUnlimited: true };
+        }
+
+        const today = new Date().toISOString().split('T')[0];
+        const usedKey = `compliments_used:${userId}:${today}`;
+        const used = parseInt(await this.redisService.get(usedKey) || '0', 10);
+        return {
+            remaining: Math.max(0, limits.complimentCredits - used),
+            limit: limits.complimentCredits,
+            isUnlimited: false,
+        };
+    }
+
+    async useComplimentCredit(userId: string): Promise<void> {
+        const remaining = await this.getRemainingCompliments(userId);
+        if (remaining.remaining === 0 && !remaining.isUnlimited) {
+            throw new BadRequestException('No compliment credits remaining today.');
+        }
+
+        const today = new Date().toISOString().split('T')[0];
+        const usedKey = `compliments_used:${userId}:${today}`;
+        const used = parseInt(await this.redisService.get(usedKey) || '0', 10);
+        await this.redisService.set(usedKey, String(used + 1), 24 * 3600);
+    }
+
+    // ─── INVISIBLE MODE ──────────────────────────────────────
+
+    async toggleInvisibleMode(userId: string, enabled: boolean): Promise<void> {
+        const canUse = await this.hasFeature(userId, FeatureFlag.INVISIBLE_MODE);
+        if (!canUse) {
+            throw new BadRequestException('Invisible mode is a Premium feature.');
+        }
+        await this.redisService.set(`invisible:${userId}`, enabled ? '1' : '0', 0);
+    }
+
+    async isInvisible(userId: string): Promise<boolean> {
+        const val = await this.redisService.get(`invisible:${userId}`);
+        return val === '1';
     }
 
     // ─── BOOST SYSTEM ───────────────────────────────────────
@@ -230,6 +351,47 @@ export class MonetizationService {
             .execute();
 
         return result.affected || 0;
+    }
+
+    // ─── PASSPORT MODE (Virtual Location) ──────────────────
+
+    async setPassportLocation(
+        userId: string,
+        latitude: number,
+        longitude: number,
+        city?: string,
+        country?: string,
+    ): Promise<void> {
+        const canUse = await this.hasFeature(userId, FeatureFlag.PASSPORT_MODE);
+        if (!canUse) {
+            throw new BadRequestException('Passport mode is not available on your plan.');
+        }
+
+        const passportData = JSON.stringify({ latitude, longitude, city, country });
+        await this.redisService.set(`passport:${userId}`, passportData, 0); // No expiry
+        this.logger.log(`User ${userId} set passport location: ${city || ''}, ${country || ''}`);
+    }
+
+    async clearPassportLocation(userId: string): Promise<void> {
+        await this.redisService.del(`passport:${userId}`);
+        this.logger.log(`User ${userId} cleared passport location`);
+    }
+
+    async getPassportLocation(userId: string): Promise<{ latitude: number; longitude: number; city?: string; country?: string } | null> {
+        const data = await this.redisService.get(`passport:${userId}`);
+        if (!data) return null;
+        try {
+            return JSON.parse(data);
+        } catch {
+            return null;
+        }
+    }
+
+    async getEffectiveLocation(userId: string): Promise<{ latitude: number; longitude: number; city?: string; country?: string } | null> {
+        // Passport mode overrides real location
+        const passport = await this.getPassportLocation(userId);
+        if (passport) return passport;
+        return null; // Caller should fall back to profile location
     }
 
     // ─── USER STATUS SUMMARY ────────────────────────────────

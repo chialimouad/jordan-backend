@@ -1,11 +1,20 @@
-export default () => ({
+export default () => {
+    // Validate critical secrets at startup
+    if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'default-secret') {
+        throw new Error('FATAL: JWT_SECRET environment variable must be set to a strong, unique value.');
+    }
+    if (!process.env.JWT_REFRESH_SECRET || process.env.JWT_REFRESH_SECRET === 'default-refresh-secret') {
+        throw new Error('FATAL: JWT_REFRESH_SECRET environment variable must be set to a strong, unique value.');
+    }
+
+    return {
     port: parseInt(process.env.PORT || '3000', 10),
     apiPrefix: process.env.API_PREFIX || 'api/v1',
 
     jwt: {
-        secret: process.env.JWT_SECRET || 'default-secret',
+        secret: process.env.JWT_SECRET,
         expiration: process.env.JWT_EXPIRATION || '15m',
-        refreshSecret: process.env.JWT_REFRESH_SECRET || 'default-refresh-secret',
+        refreshSecret: process.env.JWT_REFRESH_SECRET,
         refreshExpiration: process.env.JWT_REFRESH_EXPIRATION || '7d',
     },
 
@@ -21,7 +30,6 @@ export default () => ({
 
     redis: {
         url: process.env.REDIS_URL || '',
-        token: process.env.REDIS_TOKEN || '',
     },
 
     cloudinary: {
@@ -45,7 +53,7 @@ export default () => ({
     },
 
     otp: {
-        expirySeconds: parseInt(process.env.OTP_EXPIRY_SECONDS || '30', 10),
+        expirySeconds: parseInt(process.env.OTP_EXPIRY_SECONDS || '300', 10),
         cooldownSeconds: parseInt(process.env.OTP_COOLDOWN_SECONDS || '60', 10),
         maxAttempts: parseInt(process.env.OTP_MAX_ATTEMPTS || '5', 10),
     },
@@ -54,4 +62,4 @@ export default () => ({
         ttl: parseInt(process.env.THROTTLE_TTL || '60', 10),
         limit: parseInt(process.env.THROTTLE_LIMIT || '100', 10),
     },
-});
+};};

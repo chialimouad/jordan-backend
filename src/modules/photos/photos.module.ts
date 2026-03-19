@@ -9,6 +9,6 @@ import { Photo } from '../../database/entities/photo.entity';
     imports: [TypeOrmModule.forFeature([Photo])],
     controllers: [PhotosController],
     providers: [PhotosService, CloudinaryService],
-    exports: [PhotosService],
+    exports: [PhotosService, CloudinaryService],
 })
 export class PhotosModule { }

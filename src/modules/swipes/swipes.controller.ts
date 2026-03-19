@@ -28,6 +28,12 @@ export class SwipesController {
         return this.swipesService.swipe(userId, dto);
     }
 
+    @Post('rewind')
+    @ApiOperation({ summary: 'Undo last swipe (limited for free, unlimited for premium)' })
+    async rewind(@CurrentUser('sub') userId: string) {
+        return this.swipesService.rewind(userId);
+    }
+
     @Get('who-liked-me')
     @ApiOperation({ summary: 'See who liked you (premium: full list, free: count only)' })
     async getWhoLikedMe(@CurrentUser('sub') userId: string) {
@@ -42,5 +48,41 @@ export class SwipesController {
     ) {
         const score = await this.swipesService.getCompatibilityScore(userId, targetUserId);
         return { compatibilityScore: score };
+    }
+
+    // ─── REMATCH / SECOND CHANCE ────────────────────────────
+
+    @Post('rematch/:targetUserId')
+    @ApiOperation({ summary: 'Request a rematch / second chance (premium)' })
+    async requestRematch(
+        @CurrentUser('sub') userId: string,
+        @Param('targetUserId') targetUserId: string,
+        @Body('message') message?: string,
+    ) {
+        return this.swipesService.requestRematch(userId, targetUserId, message);
+    }
+
+    @Post('rematch/:requestId/accept')
+    @ApiOperation({ summary: 'Accept a rematch request' })
+    async acceptRematch(
+        @CurrentUser('sub') userId: string,
+        @Param('requestId') requestId: string,
+    ) {
+        return this.swipesService.acceptRematch(userId, requestId);
+    }
+
+    @Post('rematch/:requestId/reject')
+    @ApiOperation({ summary: 'Reject a rematch request' })
+    async rejectRematch(
+        @CurrentUser('sub') userId: string,
+        @Param('requestId') requestId: string,
+    ) {
+        return this.swipesService.rejectRematch(userId, requestId);
+    }
+
+    @Get('rematch/requests')
+    @ApiOperation({ summary: 'Get my pending rematch requests' })
+    async getMyRematchRequests(@CurrentUser('sub') userId: string) {
+        return this.swipesService.getMyRematchRequests(userId);
     }
 }

@@ -29,16 +29,26 @@ const dbLogger = new Logger('DatabaseModule');
                     };
                 }
 
+                const isProduction = process.env.NODE_ENV === 'production';
+
                 return {
                     type: 'postgres',
                     ...connectionConfig,
                     ssl: { rejectUnauthorized: false },
                     autoLoadEntities: true,
-                    synchronize: true,
-                    logging: process.env.NODE_ENV === 'development',
+                    synchronize: !isProduction,
+                    logging: !isProduction,
                     entities: [__dirname + '/entities/**/*.entity{.ts,.js}'],
-                    retryAttempts: 3,
+                    retryAttempts: 5,
                     retryDelay: 3000,
+                    // Connection pool tuning for scale (1000-10000 users)
+                    extra: {
+                        max: isProduction ? 100 : 20,             // Max pool connections (scaled for 10k users)
+                        min: isProduction ? 10 : 2,               // Min idle connections
+                        idleTimeoutMillis: 30000,                 // Close idle connections after 30s
+                        connectionTimeoutMillis: 10000,           // Fail fast if can't connect in 10s
+                        statement_timeout: 30000,                 // Kill queries longer than 30s
+                    },
                 };
             },
         }),

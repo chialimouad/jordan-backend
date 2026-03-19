@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User, UserStatus } from '../../../database/entities/user.entity';
+import { RedisService } from '../../redis/redis.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -12,6 +13,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         configService: ConfigService,
         @InjectRepository(User)
         private readonly userRepository: Repository<User>,
+        private readonly redisService: RedisService,
     ) {
         super({
             jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -21,6 +23,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     async validate(payload: any) {
+        // Check if this specific token has been blacklisted (logout / revocation)
+        if (payload.jti) {
+            const isBlacklisted = await this.redisService.isTokenBlacklisted(payload.jti);
+            if (isBlacklisted) {
+                throw new UnauthorizedException('Token has been revoked');
+            }
+        }
+
+        // Check if all sessions were revoked after this token was issued
+        const revokedAt = await this.redisService.getUserRevokedAt(payload.sub);
+        if (revokedAt && payload.iat && payload.iat * 1000 < revokedAt) {
+            throw new UnauthorizedException('Session has been revoked. Please re-login.');
+        }
+
         const user = await this.userRepository.findOne({
             where: { id: payload.sub },
         });
@@ -35,6 +51,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             role: user.role,
             firstName: user.firstName,
             lastName: user.lastName,
+            jti: payload.jti,
+            familyId: payload.familyId,
         };
     }
 }

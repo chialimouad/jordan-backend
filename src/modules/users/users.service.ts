@@ -39,12 +39,30 @@ export class UsersService {
         return this.findById(userId);
     }
 
+    // Fields a user is allowed to modify on their own account
+    private static readonly ALLOWED_UPDATE_FIELDS = new Set([
+        'firstName', 'lastName', 'phone', 'username',
+        'notificationsEnabled', 'matchNotifications',
+        'messageNotifications', 'likeNotifications',
+        'locationEnabled',
+    ]);
+
     async updateMe(
         userId: string,
         updateData: Partial<User>,
     ): Promise<User> {
-        await this.userRepository.update(userId, updateData);
-        await this.redisService.del(`user:${userId}`);
+        // Strip any fields the user is not allowed to set (prevents privilege escalation)
+        const safeData: Record<string, any> = {};
+        for (const [key, value] of Object.entries(updateData)) {
+            if (UsersService.ALLOWED_UPDATE_FIELDS.has(key)) {
+                safeData[key] = value;
+            }
+        }
+
+        if (Object.keys(safeData).length > 0) {
+            await this.userRepository.update(userId, safeData);
+            await this.redisService.del(`user:${userId}`);
+        }
         return this.findById(userId);
     }
 
@@ -55,8 +73,16 @@ export class UsersService {
 
     async getPublicProfile(userId: string): Promise<Partial<User>> {
         const user = await this.findById(userId);
-        const { password, refreshToken, deletedAt, ...publicData } = user as any;
-        return publicData;
+        // Explicit whitelist — never expose sensitive fields to other users
+        return {
+            id: user.id,
+            username: user.username,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            role: user.role,
+            selfieVerified: user.selfieVerified,
+            createdAt: user.createdAt,
+        } as Partial<User>;
     }
 
     async updateStatus(userId: string, status: UserStatus): Promise<void> {

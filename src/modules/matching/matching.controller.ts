@@ -43,4 +43,22 @@ export class MatchingController {
         const score = await this.matchingService.getCachedCompatibility(userId, targetUserId);
         return { userId, targetUserId, compatibilityScore: score };
     }
+
+    @Get('recommended')
+    @ApiOperation({ summary: 'Get "Recommended for You" — blended 60% compat + 40% collaborative filtering' })
+    async getRecommendedForYou(
+        @CurrentUser('sub') userId: string,
+        @Query('limit') limit?: number,
+    ) {
+        return this.matchingService.getRecommendedForYou(userId, limit || 10);
+    }
+
+    @Get('collaborative')
+    @ApiOperation({ summary: 'Get collaborative filtering recommendations (users like you also liked)' })
+    async getCollaborativeRecommendations(
+        @CurrentUser('sub') userId: string,
+        @Query('limit') limit?: number,
+    ) {
+        return this.matchingService.getCollaborativeRecommendations(userId, limit || 10);
+    }
 }

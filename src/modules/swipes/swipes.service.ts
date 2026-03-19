@@ -13,12 +13,14 @@ import { Subscription, SubscriptionPlan } from '../../database/entities/subscrip
 import { Profile } from '../../database/entities/profile.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { Conversation } from '../../database/entities/conversation.entity';
+import { RematchRequest, RematchStatus } from '../../database/entities/rematch-request.entity';
 import { CreateSwipeDto, SwipeAction } from './dto/swipe.dto';
 import { RedisService } from '../redis/redis.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { MonetizationService, FeatureFlag } from '../monetization/monetization.service';
 
-const FREE_DAILY_SWIPE_LIMIT = 25;
-const FREE_DAILY_SUPER_LIKE_LIMIT = 1;
+const FREE_DAILY_SWIPE_LIMIT = 10;
+const FREE_DAILY_SUPER_LIKE_LIMIT = 0;
 
 @Injectable()
 export class SwipesService {
@@ -39,8 +41,11 @@ export class SwipesService {
         private readonly preferenceRepository: Repository<UserPreference>,
         @InjectRepository(Conversation)
         private readonly conversationRepository: Repository<Conversation>,
+        @InjectRepository(RematchRequest)
+        private readonly rematchRepository: Repository<RematchRequest>,
         private readonly redisService: RedisService,
         private readonly notificationsService: NotificationsService,
+        private readonly monetizationService: MonetizationService,
     ) { }
 
     async swipe(userId: string, dto: CreateSwipeDto) {
@@ -162,6 +167,49 @@ export class SwipesService {
                 createdAt: l.createdAt,
             })),
             isPremiumFeature: false,
+        };
+    }
+
+    // ─── REWIND (Undo last swipe) ─────────────────────────────
+
+    async rewind(userId: string) {
+        // Find the user's most recent swipe
+        const lastSwipe = await this.likeRepository.findOne({
+            where: { likerId: userId },
+            order: { createdAt: 'DESC' },
+        });
+
+        if (!lastSwipe) {
+            throw new BadRequestException('No swipe to undo');
+        }
+
+        // Check rewind limits via monetization
+        const result = await this.monetizationService.useRewind(userId);
+
+        // If a match was created from this swipe, remove it
+        const [id1, id2] = [userId, lastSwipe.likedId].sort();
+        const match = await this.matchRepository.findOne({
+            where: { user1Id: id1, user2Id: id2, status: MatchStatus.ACTIVE },
+        });
+
+        if (match) {
+            // Delete conversation for this match
+            await this.conversationRepository.delete({ matchId: match.id });
+            await this.matchRepository.remove(match);
+        }
+
+        // Remove the swipe
+        await this.likeRepository.remove(lastSwipe);
+
+        this.logger.log(`User ${userId} rewound swipe on ${lastSwipe.likedId}`);
+
+        return {
+            rewound: true,
+            undoneSwipe: {
+                targetUserId: lastSwipe.likedId,
+                action: lastSwipe.type,
+            },
+            remainingRewinds: result.remaining,
         };
     }
 
@@ -300,5 +348,124 @@ export class SwipesService {
             where: { userId, status: 'active' as any },
         });
         return !!subscription && subscription.plan !== SubscriptionPlan.FREE;
+    }
+
+    // ─── REMATCH / SECOND CHANCE (premium feature) ────────
+
+    async requestRematch(userId: string, targetUserId: string, message?: string) {
+        // Verify premium feature
+        const hasFeature = await this.monetizationService.hasFeature(userId, FeatureFlag.REMATCH);
+        if (!hasFeature) {
+            throw new ForbiddenException('Rematch is a Premium feature. Upgrade to request a second chance.');
+        }
+
+        if (userId === targetUserId) {
+            throw new BadRequestException('Cannot rematch with yourself');
+        }
+
+        // Must have previously passed or unmatched this user
+        const previousSwipe = await this.likeRepository.findOne({
+            where: { likerId: userId, likedId: targetUserId },
+        });
+        const previousUnmatch = await this.matchRepository.findOne({
+            where: [
+                { user1Id: userId, user2Id: targetUserId, status: MatchStatus.UNMATCHED },
+                { user1Id: targetUserId, user2Id: userId, status: MatchStatus.UNMATCHED },
+            ],
+        });
+
+        if (!previousSwipe && !previousUnmatch) {
+            throw new BadRequestException('You can only request a rematch with someone you previously passed or unmatched');
+        }
+
+        // Check for existing pending rematch
+        const existing = await this.rematchRepository.findOne({
+            where: { requesterId: userId, targetId: targetUserId, status: RematchStatus.PENDING },
+        });
+        if (existing) {
+            throw new BadRequestException('Rematch request already pending');
+        }
+
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+        const request = this.rematchRepository.create({
+            requesterId: userId,
+            targetId: targetUserId,
+            message,
+            status: RematchStatus.PENDING,
+            expiresAt,
+        });
+        const saved = await this.rematchRepository.save(request);
+
+        // Notify target
+        await this.notificationsService.createNotification(targetUserId, {
+            type: 'like',
+            title: 'Second Chance Request',
+            body: message || 'Someone wants a second chance to connect with you!',
+            data: { rematchRequestId: saved.id, requesterId: userId },
+        });
+
+        return { requestId: saved.id, status: 'pending', expiresAt };
+    }
+
+    async acceptRematch(userId: string, requestId: string) {
+        const request = await this.rematchRepository.findOne({
+            where: { id: requestId, targetId: userId, status: RematchStatus.PENDING },
+        });
+        if (!request) {
+            throw new BadRequestException('Rematch request not found or already resolved');
+        }
+
+        if (request.expiresAt && new Date() > request.expiresAt) {
+            request.status = RematchStatus.EXPIRED;
+            await this.rematchRepository.save(request);
+            throw new BadRequestException('Rematch request has expired');
+        }
+
+        request.status = RematchStatus.ACCEPTED;
+        await this.rematchRepository.save(request);
+
+        // Remove old pass/like so a new match can form
+        await this.likeRepository.delete({ likerId: request.requesterId, likedId: userId });
+        await this.likeRepository.delete({ likerId: userId, likedId: request.requesterId });
+
+        // Create mutual match
+        const match = await this.createMatch(request.requesterId, userId);
+
+        this.logger.log(`Rematch accepted: ${request.requesterId} <-> ${userId}`);
+
+        return { matched: true, matchId: match.id };
+    }
+
+    async rejectRematch(userId: string, requestId: string) {
+        const request = await this.rematchRepository.findOne({
+            where: { id: requestId, targetId: userId, status: RematchStatus.PENDING },
+        });
+        if (!request) {
+            throw new BadRequestException('Rematch request not found or already resolved');
+        }
+
+        request.status = RematchStatus.REJECTED;
+        await this.rematchRepository.save(request);
+
+        return { rejected: true };
+    }
+
+    async getMyRematchRequests(userId: string) {
+        const received = await this.rematchRepository.find({
+            where: { targetId: userId, status: RematchStatus.PENDING },
+            relations: ['requester'],
+            order: { createdAt: 'DESC' },
+        });
+
+        return received.map(r => ({
+            id: r.id,
+            requesterId: r.requesterId,
+            firstName: r.requester?.firstName,
+            lastName: r.requester?.lastName,
+            message: r.message,
+            expiresAt: r.expiresAt,
+            createdAt: r.createdAt,
+        }));
     }
 }

@@ -98,6 +98,55 @@ export class SearchService {
             }
         }
 
+        // Education filter
+        if (filters.education) {
+            query.andWhere('profile.education = :education', {
+                education: filters.education,
+            });
+        }
+
+        // Interests filter
+        if (filters.interests && filters.interests.length > 0) {
+            // Match profiles that have at least one of the specified interests
+            const interestConditions = filters.interests.map((interest, i) => {
+                const param = `interest_${i}`;
+                query.setParameter(param, `%${interest}%`);
+                return `profile.interests LIKE :${param}`;
+            });
+            query.andWhere(`(${interestConditions.join(' OR ')})`);
+        }
+
+        // Verified only filter
+        if (filters.verifiedOnly) {
+            query.andWhere('user.selfieVerified = :verified', { verified: true });
+        }
+
+        // Distance filter (requires user's location)
+        if (filters.maxDistance) {
+            const userProfile = await this.profileRepository.findOne({
+                where: { userId },
+                select: ['latitude', 'longitude'],
+            });
+            if (userProfile?.latitude && userProfile?.longitude) {
+                // Bounding box pre-filter (uses indexes, avoids full-table Haversine)
+                const latDelta = filters.maxDistance / 111;
+                const lngDelta = filters.maxDistance / (111 * Math.cos(Number(userProfile.latitude) * Math.PI / 180));
+                query.andWhere('profile.latitude BETWEEN :sMinLat AND :sMaxLat', {
+                    sMinLat: Number(userProfile.latitude) - latDelta,
+                    sMaxLat: Number(userProfile.latitude) + latDelta,
+                });
+                query.andWhere('profile.longitude BETWEEN :sMinLng AND :sMaxLng', {
+                    sMinLng: Number(userProfile.longitude) - lngDelta,
+                    sMaxLng: Number(userProfile.longitude) + lngDelta,
+                });
+                // Precise Haversine filter
+                query.andWhere(
+                    `(6371 * acos(cos(radians(:userLat)) * cos(radians(profile.latitude)) * cos(radians(profile.longitude) - radians(:userLng)) + sin(radians(:userLat)) * sin(radians(profile.latitude)))) <= :maxDist`,
+                    { userLat: userProfile.latitude, userLng: userProfile.longitude, maxDist: filters.maxDistance },
+                );
+            }
+        }
+
         // Full-text search on bio
         if (filters.q) {
             query.andWhere('LOWER(profile.bio) LIKE LOWER(:q)', {
@@ -111,28 +160,31 @@ export class SearchService {
 
         const [profiles, total] = await query.getManyAndCount();
 
-        // Enrich with photos
-        const results = await Promise.all(
-            profiles.map(async (p) => {
-                const photo = await this.photoRepository.findOne({
-                    where: { userId: p.userId, isMain: true },
-                });
-                return {
-                    userId: p.userId,
-                    firstName: p.user?.firstName,
-                    lastName: p.user?.lastName,
-                    age: this.calculateAge(p.dateOfBirth),
-                    bio: p.bio,
-                    city: p.city,
-                    country: p.country,
-                    gender: p.gender,
-                    religiousLevel: p.religiousLevel,
-                    maritalStatus: p.maritalStatus,
-                    interests: p.interests,
-                    photo: photo?.url || null,
-                };
-            }),
-        );
+        // Batch fetch main photos for all profiles (avoids N+1 query)
+        const userIds = profiles.map(p => p.userId);
+        const photos = userIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...userIds)', { userIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .getMany()
+            : [];
+        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+
+        const results = profiles.map((p) => ({
+            userId: p.userId,
+            firstName: p.user?.firstName,
+            lastName: p.user?.lastName,
+            age: this.calculateAge(p.dateOfBirth),
+            bio: p.bio,
+            city: p.city,
+            country: p.country,
+            gender: p.gender,
+            religiousLevel: p.religiousLevel,
+            maritalStatus: p.maritalStatus,
+            interests: p.interests,
+            photo: photoMap.get(p.userId) || null,
+        }));
 
         const response = {
             results,

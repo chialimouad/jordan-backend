@@ -1,54 +1,103 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 
 @Injectable()
-export class RedisService implements OnModuleDestroy {
+export class RedisService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(RedisService.name);
-    private readonly baseUrl: string;
-    private readonly token: string;
+    private client: Redis;
+    private isConnected = false;
 
-    constructor(private configService: ConfigService) {
-        this.baseUrl = this.configService.get<string>('redis.url') || '';
-        this.token = this.configService.get<string>('redis.token') || '';
-        this.logger.log('Redis service initialized (Upstash REST)');
+    // In-memory rate limit fallback when Redis is down
+    private readonly memRateLimit = new Map<string, { count: number; expiresAt: number }>();
+
+    constructor(private configService: ConfigService) {}
+
+    async onModuleInit() {
+        const redisUrl = this.configService.get<string>('redis.url');
+        if (!redisUrl) {
+            this.logger.warn('REDIS_URL not set — using in-memory fallback only');
+            return;
+        }
+
+        this.client = new Redis(redisUrl, {
+            maxRetriesPerRequest: 3,
+            retryStrategy: (times) => Math.min(times * 200, 5000),
+            enableReadyCheck: true,
+            lazyConnect: false,
+            tls: redisUrl.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
+        });
+
+        this.client.on('connect', () => {
+            this.isConnected = true;
+            this.logger.log('Redis connected (ioredis TCP)');
+        });
+        this.client.on('error', (err) => {
+            this.isConnected = false;
+            this.logger.error(`Redis error: ${err.message}`);
+        });
+        this.client.on('close', () => {
+            this.isConnected = false;
+            this.logger.warn('Redis connection closed');
+        });
+        this.client.on('reconnecting', () => {
+            this.logger.log('Redis reconnecting...');
+        });
     }
 
     async onModuleDestroy() {
-        this.logger.log('Redis service destroyed');
+        if (this.client) {
+            await this.client.quit();
+            this.logger.log('Redis connection closed gracefully');
+        }
     }
 
-    private async execute(command: string[]): Promise<any> {
+    /** Expose the raw ioredis client (for socket.io adapter, etc.) */
+    getClient(): Redis {
+        return this.client;
+    }
+
+    /** Create a duplicate connection (for socket.io pub/sub which needs separate connections) */
+    createDuplicate(): Redis {
+        return this.client?.duplicate();
+    }
+
+    get connected(): boolean {
+        return this.isConnected;
+    }
+
+    // ─── Core Commands ───────────────────────────────────────
+
+    async get(key: string): Promise<string | null> {
+        if (!this.isConnected) return null;
         try {
-            const response = await fetch(`${this.baseUrl}`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${this.token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(command),
-            });
-            const data = await response.json();
-            return data.result;
-        } catch (error) {
-            this.logger.error(`Redis command failed: ${command[0]}`, error);
+            return await this.client.get(key);
+        } catch (err) {
+            this.logger.error(`GET ${key} failed`, err);
             return null;
         }
     }
 
-    async get(key: string): Promise<string | null> {
-        return this.execute(['GET', key]);
-    }
-
     async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
-        if (ttlSeconds) {
-            await this.execute(['SET', key, value, 'EX', ttlSeconds.toString()]);
-        } else {
-            await this.execute(['SET', key, value]);
+        if (!this.isConnected) return;
+        try {
+            if (ttlSeconds) {
+                await this.client.set(key, value, 'EX', ttlSeconds);
+            } else {
+                await this.client.set(key, value);
+            }
+        } catch (err) {
+            this.logger.error(`SET ${key} failed`, err);
         }
     }
 
     async del(key: string): Promise<void> {
-        await this.execute(['DEL', key]);
+        if (!this.isConnected) return;
+        try {
+            await this.client.del(key);
+        } catch (err) {
+            this.logger.error(`DEL ${key} failed`, err);
+        }
     }
 
     async setJson(key: string, value: any, ttlSeconds?: number): Promise<void> {
@@ -66,36 +115,64 @@ export class RedisService implements OnModuleDestroy {
     }
 
     async exists(key: string): Promise<boolean> {
-        const result = await this.execute(['EXISTS', key]);
-        return result === 1;
+        if (!this.isConnected) return false;
+        try {
+            return (await this.client.exists(key)) === 1;
+        } catch {
+            return false;
+        }
     }
 
     async expire(key: string, ttlSeconds: number): Promise<void> {
-        await this.execute(['EXPIRE', key, ttlSeconds.toString()]);
+        if (!this.isConnected) return;
+        try {
+            await this.client.expire(key, ttlSeconds);
+        } catch {}
     }
 
     async incr(key: string): Promise<number> {
-        return this.execute(['INCR', key]);
+        if (!this.isConnected) return 1;
+        try {
+            return await this.client.incr(key);
+        } catch {
+            return 1;
+        }
     }
 
     async sadd(key: string, ...members: string[]): Promise<void> {
-        await this.execute(['SADD', key, ...members]);
+        if (!this.isConnected) return;
+        try {
+            await this.client.sadd(key, ...members);
+        } catch {}
     }
 
     async srem(key: string, ...members: string[]): Promise<void> {
-        await this.execute(['SREM', key, ...members]);
+        if (!this.isConnected) return;
+        try {
+            await this.client.srem(key, ...members);
+        } catch {}
     }
 
     async smembers(key: string): Promise<string[]> {
-        return this.execute(['SMEMBERS', key]) || [];
+        if (!this.isConnected) return [];
+        try {
+            return await this.client.smembers(key);
+        } catch {
+            return [];
+        }
     }
 
     async sismember(key: string, member: string): Promise<boolean> {
-        const result = await this.execute(['SISMEMBER', key, member]);
-        return result === 1;
+        if (!this.isConnected) return false;
+        try {
+            return (await this.client.sismember(key, member)) === 1;
+        } catch {
+            return false;
+        }
     }
 
-    // Online presence
+    // ─── Online Presence ─────────────────────────────────────
+
     async setUserOnline(userId: string): Promise<void> {
         await this.sadd('online_users', userId);
         await this.set(`user:${userId}:last_seen`, new Date().toISOString(), 300);
@@ -114,16 +191,104 @@ export class RedisService implements OnModuleDestroy {
         return this.smembers('online_users');
     }
 
-    // Rate limiting
+    // ─── Rate Limiting (Redis + in-memory fallback) ──────────
+
     async checkRateLimit(
         key: string,
         limit: number,
         windowSeconds: number,
     ): Promise<boolean> {
-        const current = await this.incr(`ratelimit:${key}`);
-        if (current === 1) {
-            await this.expire(`ratelimit:${key}`, windowSeconds);
+        const fullKey = `ratelimit:${key}`;
+
+        // Try Redis first
+        if (this.isConnected) {
+            try {
+                const current = await this.client.incr(fullKey);
+                if (current === 1) {
+                    await this.client.expire(fullKey, windowSeconds);
+                }
+                return current <= limit;
+            } catch {
+                // Fall through to in-memory
+            }
         }
-        return current <= limit;
+
+        // In-memory fallback — rate limiting must never fail open
+        const now = Date.now();
+        const entry = this.memRateLimit.get(fullKey);
+        if (!entry || entry.expiresAt < now) {
+            this.memRateLimit.set(fullKey, { count: 1, expiresAt: now + windowSeconds * 1000 });
+            return true;
+        }
+        entry.count++;
+        return entry.count <= limit;
+    }
+
+    // ─── Token Blacklist (for logout / session revocation) ───
+
+    async blacklistToken(jti: string, ttlSeconds: number): Promise<void> {
+        await this.set(`blacklist:${jti}`, '1', ttlSeconds);
+    }
+
+    async isTokenBlacklisted(jti: string): Promise<boolean> {
+        const result = await this.get(`blacklist:${jti}`);
+        return result === '1';
+    }
+
+    // ─── Token Family (refresh token rotation detection) ─────
+
+    async storeTokenFamily(userId: string, familyId: string, ttlSeconds: number): Promise<void> {
+        await this.set(`tokenfamily:${userId}:${familyId}`, 'valid', ttlSeconds);
+    }
+
+    async isTokenFamilyValid(userId: string, familyId: string): Promise<boolean> {
+        const result = await this.get(`tokenfamily:${userId}:${familyId}`);
+        return result === 'valid';
+    }
+
+    async invalidateTokenFamily(userId: string, familyId: string): Promise<void> {
+        await this.set(`tokenfamily:${userId}:${familyId}`, 'revoked', 86400);
+    }
+
+    async invalidateAllUserSessions(userId: string): Promise<void> {
+        // Set a global revocation timestamp — any token issued before this is invalid
+        await this.set(`user_revoked_at:${userId}`, Date.now().toString(), 86400 * 30);
+    }
+
+    async getUserRevokedAt(userId: string): Promise<number | null> {
+        const val = await this.get(`user_revoked_at:${userId}`);
+        return val ? parseInt(val, 10) : null;
+    }
+
+    // ─── Audit Log (append to Redis list, capped) ────────────
+
+    async appendAuditLog(entry: Record<string, any>): Promise<void> {
+        if (!this.isConnected) return;
+        try {
+            const key = `audit:${entry.type || 'general'}`;
+            await this.client.lpush(key, JSON.stringify({ ...entry, timestamp: new Date().toISOString() }));
+            await this.client.ltrim(key, 0, 9999); // Keep last 10,000 entries per type
+        } catch {}
+    }
+
+    async getAuditLogs(type: string, count = 100): Promise<any[]> {
+        if (!this.isConnected) return [];
+        try {
+            const entries = await this.client.lrange(`audit:${type}`, 0, count - 1);
+            return entries.map(e => JSON.parse(e));
+        } catch {
+            return [];
+        }
+    }
+
+    // ─── Periodic cleanup for in-memory rate limit map ───────
+
+    cleanupMemRateLimit(): void {
+        const now = Date.now();
+        for (const [key, entry] of this.memRateLimit) {
+            if (entry.expiresAt < now) {
+                this.memRateLimit.delete(key);
+            }
+        }
     }
 }

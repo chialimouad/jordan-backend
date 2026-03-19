@@ -62,6 +62,15 @@ export class UserBehavior {
     avgSessionDurationMinutes: number;
 
     @Column({ type: 'int', default: 0 })
+    messagesReceived: number;
+
+    @Column({ type: 'int', default: 0 })
+    messagesReplied: number;
+
+    @Column({ type: 'float', default: 0 })
+    responseRate: number; // 0-1, messagesReplied / messagesReceived
+
+    @Column({ type: 'int', default: 0 })
     daysActive: number;
 
     @Column({ nullable: true })

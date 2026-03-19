@@ -9,6 +9,10 @@ import { AnalyticsEvent, AnalyticsEventType } from '../../database/entities/anal
 import { Profile } from '../../database/entities/profile.entity';
 import { Like } from '../../database/entities/like.entity';
 import { Match, MatchStatus } from '../../database/entities/match.entity';
+import { Message } from '../../database/entities/message.entity';
+import { Conversation } from '../../database/entities/conversation.entity';
+import { Subscription, SubscriptionPlan, SubscriptionStatus } from '../../database/entities/subscription.entity';
+import { RematchRequest, RematchStatus } from '../../database/entities/rematch-request.entity';
 import { RedisService } from '../redis/redis.service';
 
 @Injectable()
@@ -30,6 +34,14 @@ export class JobsService {
         private readonly likeRepository: Repository<Like>,
         @InjectRepository(Match)
         private readonly matchRepository: Repository<Match>,
+        @InjectRepository(Message)
+        private readonly messageRepository: Repository<Message>,
+        @InjectRepository(Conversation)
+        private readonly conversationRepository: Repository<Conversation>,
+        @InjectRepository(Subscription)
+        private readonly subscriptionRepository: Repository<Subscription>,
+        @InjectRepository(RematchRequest)
+        private readonly rematchRepository: Repository<RematchRequest>,
         private readonly redisService: RedisService,
     ) { }
 
@@ -137,6 +149,41 @@ export class JobsService {
 
                 behavior.daysActive = parseInt(events?.count || '0', 10);
 
+                // Compute response rate
+                const conversations = await this.conversationRepository.find({
+                    where: [
+                        { user1Id: behavior.userId },
+                        { user2Id: behavior.userId },
+                    ],
+                    select: ['id', 'user1Id', 'user2Id'],
+                });
+
+                if (conversations.length > 0) {
+                    const conversationIds = conversations.map(c => c.id);
+                    let received = 0;
+                    let replied = 0;
+
+                    for (const conv of conversations) {
+                        // Count messages received (sent by the other person)
+                        const otherId = conv.user1Id === behavior.userId ? conv.user2Id : conv.user1Id;
+                        const msgFromOther = await this.messageRepository.count({
+                            where: { conversationId: conv.id, senderId: otherId },
+                        });
+                        const myReplies = await this.messageRepository.count({
+                            where: { conversationId: conv.id, senderId: behavior.userId },
+                        });
+
+                        if (msgFromOther > 0) {
+                            received++;
+                            if (myReplies > 0) replied++;
+                        }
+                    }
+
+                    behavior.messagesReceived = received;
+                    behavior.messagesReplied = replied;
+                    behavior.responseRate = received > 0 ? replied / received : 0;
+                }
+
                 await this.behaviorRepository.save(behavior);
             } catch (error) {
                 this.logger.error(`Failed to update behavior for ${behavior.userId}`, (error as Error).message);
@@ -144,6 +191,58 @@ export class JobsService {
         }
 
         this.logger.log(`Updated ${behaviors.length} behavior records`);
+    }
+
+    // ─── EXPIRE OLD REMATCH REQUESTS (daily) ─────────────────
+
+    @Cron(CronExpression.EVERY_DAY_AT_1AM)
+    async expireOldRematchRequests(): Promise<void> {
+        const result = await this.rematchRepository
+            .createQueryBuilder()
+            .update(RematchRequest)
+            .set({ status: RematchStatus.EXPIRED })
+            .where('status = :status AND expiresAt < :now', {
+                status: RematchStatus.PENDING,
+                now: new Date(),
+            })
+            .execute();
+
+        if (result.affected && result.affected > 0) {
+            this.logger.log(`Expired ${result.affected} rematch requests`);
+        }
+    }
+
+    // ─── IMPROVED VISITS FOR PREMIUM USERS (every 3 hours) ──
+
+    @Cron(CronExpression.EVERY_3_HOURS)
+    async boostPremiumVisibility(): Promise<void> {
+        this.logger.log('Boosting premium user visibility...');
+
+        // Find premium/gold users with active subscriptions
+        const premiumSubs = await this.subscriptionRepository.find({
+            where: [
+                { plan: SubscriptionPlan.PREMIUM, status: SubscriptionStatus.ACTIVE },
+                { plan: SubscriptionPlan.GOLD, status: SubscriptionStatus.ACTIVE },
+            ],
+            select: ['userId'],
+        });
+
+        const premiumUserIds = premiumSubs.map(s => s.userId);
+        if (premiumUserIds.length === 0) return;
+
+        // Boost their activity score slightly to improve position in search/suggestions
+        let boosted = 0;
+        for (const userId of premiumUserIds) {
+            const profile = await this.profileRepository.findOne({ where: { userId } });
+            if (profile) {
+                // Add a small boost capped at 100
+                profile.activityScore = Math.min(100, (profile.activityScore || 0) + 2);
+                await this.profileRepository.save(profile);
+                boosted++;
+            }
+        }
+
+        this.logger.log(`Boosted visibility for ${boosted} premium users`);
     }
 
     // ─── CLEAN UP OLD ANALYTICS (daily at midnight) ─────────

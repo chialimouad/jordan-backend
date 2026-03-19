@@ -1,4 +1,5 @@
 import { IsEmail, IsString, MinLength, MaxLength, IsOptional, Length, Matches } from 'class-validator';
+import { Match as MatchValidator } from '../../../common/decorators/match.decorator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RegisterDto {
@@ -14,6 +15,11 @@ export class RegisterDto {
         message: 'Password must contain at least one uppercase letter, one lowercase letter, and one number',
     })
     password: string;
+
+    @ApiProperty({ example: 'StrongP@ss123' })
+    @IsString()
+    @MatchValidator('password', { message: 'Passwords do not match' })
+    confirmPassword: string;
 
     @ApiProperty({ example: 'Ahmed' })
     @IsString()

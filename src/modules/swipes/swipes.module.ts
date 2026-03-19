@@ -9,12 +9,15 @@ import { Subscription } from '../../database/entities/subscription.entity';
 import { Profile } from '../../database/entities/profile.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { Conversation } from '../../database/entities/conversation.entity';
+import { RematchRequest } from '../../database/entities/rematch-request.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { MonetizationModule } from '../monetization/monetization.module';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([Like, Match, BlockedUser, Subscription, Profile, UserPreference, Conversation]),
+        TypeOrmModule.forFeature([Like, Match, BlockedUser, Subscription, Profile, UserPreference, Conversation, RematchRequest]),
         NotificationsModule,
+        MonetizationModule,
     ],
     controllers: [SwipesController],
     providers: [SwipesService],

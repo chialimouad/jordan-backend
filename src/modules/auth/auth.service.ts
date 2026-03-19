@@ -12,6 +12,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { randomUUID, randomInt } from 'crypto';
 import { User, UserStatus } from '../../database/entities/user.entity';
 import {
     RegisterDto,
@@ -219,14 +220,33 @@ export class AuthService {
 
     // ─── LOGIN ──────────────────────────────────────────────
 
-    async login(loginDto: LoginDto) {
+    async login(loginDto: LoginDto, clientIp?: string, userAgent?: string) {
         const { email, password } = loginDto;
 
-        // Anti-bruteforce: rate limit login attempts
-        const rateLimitKey = `login:${email}`;
-        const allowed = await this.redisService.checkRateLimit(rateLimitKey, 5, 300);
-        if (!allowed) {
+        // Anti-bruteforce: rate limit per email AND per IP
+        const emailRateKey = `login:${email}`;
+        const emailAllowed = await this.redisService.checkRateLimit(emailRateKey, 5, 300);
+        if (!emailAllowed) {
+            this.redisService.appendAuditLog({
+                type: 'suspicious',
+                action: 'login_rate_limit_email',
+                email,
+                ip: clientIp,
+            }).catch(() => {});
             throw new HttpException('Too many login attempts. Try again in 5 minutes.', HttpStatus.TOO_MANY_REQUESTS);
+        }
+
+        if (clientIp) {
+            const ipRateKey = `login_ip:${clientIp}`;
+            const ipAllowed = await this.redisService.checkRateLimit(ipRateKey, 20, 300);
+            if (!ipAllowed) {
+                this.redisService.appendAuditLog({
+                    type: 'suspicious',
+                    action: 'login_rate_limit_ip',
+                    ip: clientIp,
+                }).catch(() => {});
+                throw new HttpException('Too many login attempts from this IP. Try again later.', HttpStatus.TOO_MANY_REQUESTS);
+            }
         }
 
         const user = await this.userRepository.findOne({
@@ -238,6 +258,12 @@ export class AuthService {
         });
 
         if (!user) {
+            this.redisService.appendAuditLog({
+                type: 'suspicious',
+                action: 'login_failed_unknown_email',
+                email,
+                ip: clientIp,
+            }).catch(() => {});
             throw new UnauthorizedException('Invalid credentials');
         }
 
@@ -259,18 +285,37 @@ export class AuthService {
 
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) {
+            this.redisService.appendAuditLog({
+                type: 'suspicious',
+                action: 'login_failed_bad_password',
+                userId: user.id,
+                email,
+                ip: clientIp,
+            }).catch(() => {});
             throw new UnauthorizedException('Invalid credentials');
         }
 
         const tokens = await this.generateTokens(user);
-        await this.updateRefreshToken(user.id, tokens.refreshToken);
-        await this.userRepository.update(user.id, { lastLoginAt: new Date() });
+        await this.updateRefreshToken(user.id, tokens.refreshToken, tokens.familyId);
+        await this.userRepository.update(user.id, { lastLoginAt: new Date(), lastKnownIp: clientIp || undefined });
 
-        this.logger.log(`User logged in: ${email}`);
+        // Audit log — successful login with device fingerprint
+        this.redisService.appendAuditLog({
+            type: 'login',
+            userId: user.id,
+            email: user.email,
+            action: 'login_success',
+            familyId: tokens.familyId,
+            ip: clientIp,
+            userAgent,
+        }).catch(() => {});
+
+        this.logger.log(`User logged in: ${email} from ${clientIp}`);
 
         return {
             user: this.sanitizeUser(user),
-            ...tokens,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
         };
     }
 
@@ -354,6 +399,13 @@ export class AuthService {
     async resetPassword(dto: ResetPasswordDto) {
         const { email, otp, newPassword } = dto;
 
+        // Rate limit to prevent OTP brute-force via this endpoint
+        const rateLimitKey = `reset_password:${email}`;
+        const allowed = await this.redisService.checkRateLimit(rateLimitKey, 10, 300);
+        if (!allowed) {
+            throw new HttpException('Too many attempts. Try again later.', HttpStatus.TOO_MANY_REQUESTS);
+        }
+
         const user = await this.userRepository.findOne({
             where: { email },
             select: ['id', 'resetOtpCode', 'resetOtpExpiresAt', 'resetOtpAttempts'],
@@ -363,11 +415,19 @@ export class AuthService {
             throw new BadRequestException('Invalid request');
         }
 
+        const maxAttempts = this.configService.get<number>('otp.maxAttempts', 5);
+        if (user.resetOtpAttempts >= maxAttempts) {
+            throw new HttpException('Maximum attempts exceeded. Request a new code.', HttpStatus.TOO_MANY_REQUESTS);
+        }
+
         if (!user.resetOtpCode || !user.resetOtpExpiresAt || new Date() > user.resetOtpExpiresAt) {
             throw new BadRequestException('Reset code has expired');
         }
 
         if (user.resetOtpCode !== otp) {
+            await this.userRepository.update(user.id, {
+                resetOtpAttempts: user.resetOtpAttempts + 1,
+            });
             throw new BadRequestException('Invalid reset code');
         }
 
@@ -390,41 +450,106 @@ export class AuthService {
     // ─── TOKEN MANAGEMENT ───────────────────────────────────
 
     async refreshTokens(refreshToken: string) {
+        let payload: any;
         try {
-            const payload = this.jwtService.verify(refreshToken, {
+            payload = this.jwtService.verify(refreshToken, {
                 secret: this.configService.get<string>('jwt.refreshSecret'),
             });
-
-            const user = await this.userRepository.findOne({
-                where: { id: payload.sub },
-                select: ['id', 'email', 'firstName', 'lastName', 'role', 'refreshToken'],
-            });
-
-            if (!user || !user.refreshToken) {
-                throw new UnauthorizedException('Invalid refresh token');
-            }
-
-            const isRefreshValid = await bcrypt.compare(
-                refreshToken,
-                user.refreshToken,
-            );
-            if (!isRefreshValid) {
-                throw new UnauthorizedException('Invalid refresh token');
-            }
-
-            const tokens = await this.generateTokens(user);
-            await this.updateRefreshToken(user.id, tokens.refreshToken);
-
-            return tokens;
-        } catch (error) {
+        } catch {
             throw new UnauthorizedException('Invalid refresh token');
         }
+
+        const user = await this.userRepository.findOne({
+            where: { id: payload.sub },
+            select: ['id', 'email', 'firstName', 'lastName', 'role', 'refreshToken'],
+        });
+
+        if (!user || !user.refreshToken) {
+            throw new UnauthorizedException('Invalid refresh token');
+        }
+
+        // Validate the refresh token hash
+        const isRefreshValid = await bcrypt.compare(refreshToken, user.refreshToken);
+        if (!isRefreshValid) {
+            // ROTATION ATTACK DETECTED: someone is reusing an old refresh token.
+            // This means the token family was compromised. Invalidate ALL sessions.
+            this.logger.error(`SECURITY: Refresh token reuse detected for user ${user.id}. Invalidating all sessions.`);
+            await this.redisService.invalidateAllUserSessions(user.id);
+            await this.userRepository.update(user.id, { refreshToken: null as any });
+
+            // Audit: suspicious activity
+            this.redisService.appendAuditLog({
+                type: 'suspicious',
+                userId: user.id,
+                email: user.email,
+                action: 'refresh_token_reuse',
+                detail: 'Possible token theft — all sessions invalidated',
+                oldFamilyId: payload.familyId,
+            }).catch(() => {});
+
+            throw new UnauthorizedException('Session compromised. All sessions have been revoked.');
+        }
+
+        // Token family validation (if family tracking is present)
+        if (payload.familyId) {
+            const familyValid = await this.redisService.isTokenFamilyValid(user.id, payload.familyId);
+            if (!familyValid) {
+                this.logger.error(`SECURITY: Invalid token family ${payload.familyId} for user ${user.id}`);
+                await this.redisService.invalidateAllUserSessions(user.id);
+                await this.userRepository.update(user.id, { refreshToken: null as any });
+                throw new UnauthorizedException('Session has been revoked.');
+            }
+        }
+
+        // Issue new tokens (same family for rotation tracking)
+        const tokens = await this.generateTokens(user, payload.familyId);
+        await this.updateRefreshToken(user.id, tokens.refreshToken, tokens.familyId);
+
+        // Audit log
+        this.redisService.appendAuditLog({
+            type: 'login',
+            userId: user.id,
+            action: 'token_refresh',
+            familyId: tokens.familyId,
+        }).catch(() => {});
+
+        return {
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+        };
     }
 
-    async logout(userId: string) {
+    async logout(userId: string, accessTokenJti?: string) {
         await this.userRepository.update(userId, { refreshToken: null as any });
         await this.redisService.setUserOffline(userId);
+
+        // Blacklist the current access token so it can't be used anymore
+        if (accessTokenJti) {
+            // Blacklist for remaining TTL of access token (max 15 min)
+            await this.redisService.blacklistToken(accessTokenJti, 900);
+        }
+
+        // Audit log
+        this.redisService.appendAuditLog({
+            type: 'login',
+            userId,
+            action: 'logout',
+        }).catch(() => {});
+
         return { message: 'Logged out successfully' };
+    }
+
+    async revokeAllSessions(userId: string) {
+        await this.redisService.invalidateAllUserSessions(userId);
+        await this.userRepository.update(userId, { refreshToken: null as any });
+
+        this.redisService.appendAuditLog({
+            type: 'login',
+            userId,
+            action: 'revoke_all_sessions',
+        }).catch(() => {});
+
+        return { message: 'All sessions revoked' };
     }
 
     // ─── FCM TOKEN ──────────────────────────────────────────
@@ -437,24 +562,31 @@ export class AuthService {
     // ─── PRIVATE HELPERS ────────────────────────────────────
 
     private generateOtp(): string {
-        return Math.floor(100000 + Math.random() * 900000).toString();
+        return randomInt(100000, 999999).toString();
     }
 
-    private async generateTokens(user: User) {
-        const payload = { sub: user.id, email: user.email, role: user.role };
+    private async generateTokens(user: User, existingFamilyId?: string) {
+        const familyId = existingFamilyId || randomUUID();
+        const accessJti = randomUUID();
+        const refreshJti = randomUUID();
+
+        const basePayload = { sub: user.id, email: user.email, role: user.role, familyId };
 
         const [accessToken, refreshToken] = await Promise.all([
-            this.jwtService.signAsync(payload),
-            this.jwtService.signAsync(payload, {
+            this.jwtService.signAsync({ ...basePayload, jti: accessJti }),
+            this.jwtService.signAsync({ ...basePayload, jti: refreshJti }, {
                 secret: this.configService.get<string>('jwt.refreshSecret'),
                 expiresIn: this.configService.get<string>('jwt.refreshExpiration'),
             }),
         ]);
 
-        return { accessToken, refreshToken };
+        // Store token family in Redis (TTL = refresh token TTL, ~7 days)
+        await this.redisService.storeTokenFamily(user.id, familyId, 86400 * 7);
+
+        return { accessToken, refreshToken, familyId };
     }
 
-    private async updateRefreshToken(userId: string, refreshToken: string) {
+    private async updateRefreshToken(userId: string, refreshToken: string, familyId?: string) {
         const salt = await bcrypt.genSalt(10);
         const hashedRefreshToken = await bcrypt.hash(refreshToken, salt);
         await this.userRepository.update(userId, {

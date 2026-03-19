@@ -38,34 +38,41 @@ export class ChatService {
             take: pagination.limit,
         });
 
-        const enriched = await Promise.all(
-            conversations.map(async (conv) => {
-                const otherUserId = conv.user1Id === userId ? conv.user2Id : conv.user1Id;
-                const otherUser = conv.user1Id === userId ? conv.user2 : conv.user1;
-                const unreadCount = conv.user1Id === userId ? conv.user1UnreadCount : conv.user2UnreadCount;
-                const isMuted = conv.user1Id === userId ? conv.user1Muted : conv.user2Muted;
-
-                const photo = await this.photoRepository.findOne({
-                    where: { userId: otherUserId, isMain: true },
-                });
-
-                return {
-                    id: conv.id,
-                    matchId: conv.matchId,
-                    otherUser: {
-                        id: otherUserId,
-                        firstName: otherUser?.firstName,
-                        lastName: otherUser?.lastName,
-                        photo: photo?.url || null,
-                    },
-                    lastMessage: conv.lastMessageContent,
-                    lastMessageAt: conv.lastMessageAt,
-                    lastMessageSenderId: conv.lastMessageSenderId,
-                    unreadCount,
-                    isMuted,
-                };
-            }),
+        // Batch fetch photos for all other users (avoids N+1)
+        const otherUserIds = conversations.map(c =>
+            c.user1Id === userId ? c.user2Id : c.user1Id,
         );
+        const photos = otherUserIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...otherUserIds)', { otherUserIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .getMany()
+            : [];
+        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+
+        const enriched = conversations.map((conv) => {
+            const otherUserId = conv.user1Id === userId ? conv.user2Id : conv.user1Id;
+            const otherUser = conv.user1Id === userId ? conv.user2 : conv.user1;
+            const unreadCount = conv.user1Id === userId ? conv.user1UnreadCount : conv.user2UnreadCount;
+            const isMuted = conv.user1Id === userId ? conv.user1Muted : conv.user2Muted;
+
+            return {
+                id: conv.id,
+                matchId: conv.matchId,
+                otherUser: {
+                    id: otherUserId,
+                    firstName: otherUser?.firstName,
+                    lastName: otherUser?.lastName,
+                    photo: photoMap.get(otherUserId) || null,
+                },
+                lastMessage: conv.lastMessageContent,
+                lastMessageAt: conv.lastMessageAt,
+                lastMessageSenderId: conv.lastMessageSenderId,
+                unreadCount,
+                isMuted,
+            };
+        });
 
         return { conversations: enriched, total, page: pagination.page, limit: pagination.limit };
     }
@@ -173,17 +180,19 @@ export class ChatService {
     // ─── UNREAD COUNT ───────────────────────────────────────
 
     async getTotalUnreadCount(userId: string): Promise<number> {
-        const conversations = await this.conversationRepository.find({
-            where: [
-                { user1Id: userId, isActive: true },
-                { user2Id: userId, isActive: true },
-            ],
-        });
+        // Use SQL SUM instead of loading all conversations into memory
+        const result = await this.conversationRepository
+            .createQueryBuilder('c')
+            .select(
+                `SUM(CASE WHEN c.user1Id = :userId THEN c.user1UnreadCount ELSE c.user2UnreadCount END)`,
+                'total',
+            )
+            .where('(c.user1Id = :userId OR c.user2Id = :userId)')
+            .andWhere('c.isActive = true')
+            .setParameter('userId', userId)
+            .getRawOne();
 
-        return conversations.reduce((total, conv) => {
-            const unread = conv.user1Id === userId ? conv.user1UnreadCount : conv.user2UnreadCount;
-            return total + unread;
-        }, 0);
+        return parseInt(result?.total || '0', 10);
     }
 
     // ─── HELPERS ────────────────────────────────────────────

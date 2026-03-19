@@ -23,6 +23,9 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { MonetizationModule } from './modules/monetization/monetization.module';
 import { SecurityModule } from './modules/security/security.module';
 import { JobsModule } from './modules/jobs/jobs.module';
+import { ProfileViewsModule } from './modules/profile-views/profile-views.module';
+import { SuccessStoriesModule } from './modules/success-stories/success-stories.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import configuration from './config/configuration';
 
 @Module({
@@ -69,6 +72,9 @@ import configuration from './config/configuration';
         MonetizationModule,
         SecurityModule,
         JobsModule,
+        ProfileViewsModule,
+        SuccessStoriesModule,
+        PaymentsModule,
     ],
 })
 export class AppModule { }

@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AdminService } from './admin.service';
+import { RedisService } from '../redis/redis.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -83,7 +84,10 @@ class ReplyTicketDto {
 @Roles(UserRole.ADMIN)
 @Controller('admin')
 export class AdminController {
-    constructor(private readonly adminService: AdminService) { }
+    constructor(
+        private readonly adminService: AdminService,
+        private readonly redisService: RedisService,
+    ) { }
 
     // ─── USERS ──────────────────────────────────────────────
 
@@ -126,17 +130,44 @@ export class AdminController {
     @Patch('users/:id/status')
     @ApiOperation({ summary: 'Update user status (ban/suspend/activate)' })
     async updateUserStatus(
+        @CurrentUser('sub') adminId: string,
         @Param('id') userId: string,
         @Body() dto: UpdateUserStatusDto,
     ) {
+        this.redisService.appendAuditLog({
+            type: 'admin',
+            adminId,
+            action: 'update_user_status',
+            targetUserId: userId,
+            newStatus: dto.status,
+        }).catch(() => {});
         return this.adminService.updateUserStatus(userId, dto.status);
     }
 
     @Delete('users/:id')
     @HttpCode(HttpStatus.NO_CONTENT)
     @ApiOperation({ summary: 'Soft-delete a user account' })
-    async deleteUser(@Param('id') userId: string) {
+    async deleteUser(@CurrentUser('sub') adminId: string, @Param('id') userId: string) {
+        this.redisService.appendAuditLog({
+            type: 'admin',
+            adminId,
+            action: 'delete_user',
+            targetUserId: userId,
+        }).catch(() => {});
         await this.adminService.deleteUserAccount(userId);
+    }
+
+    @Post('users/:id/revoke-sessions')
+    @ApiOperation({ summary: 'Force-revoke all sessions for a user' })
+    async revokeUserSessions(@CurrentUser('sub') adminId: string, @Param('id') userId: string) {
+        this.redisService.appendAuditLog({
+            type: 'admin',
+            adminId,
+            action: 'revoke_user_sessions',
+            targetUserId: userId,
+        }).catch(() => {});
+        await this.redisService.invalidateAllUserSessions(userId);
+        return { message: `All sessions revoked for user ${userId}` };
     }
 
     // ─── SWIPES / ACTIVITY ──────────────────────────────────
@@ -291,5 +322,27 @@ export class AdminController {
     @ApiOperation({ summary: 'Get dashboard statistics' })
     async getDashboardStats() {
         return this.adminService.getDashboardStats();
+    }
+
+    // ─── AUDIT LOGS ──────────────────────────────────────────
+
+    @Get('audit-logs/:type')
+    @ApiOperation({ summary: 'View audit logs by type (login, admin, suspicious)' })
+    async getAuditLogs(
+        @Param('type') type: string,
+        @Query('count') count?: number,
+    ) {
+        return this.redisService.getAuditLogs(type, count || 100);
+    }
+
+    @Get('audit-logs')
+    @ApiOperation({ summary: 'View all audit log types' })
+    async getAllAuditLogs() {
+        const [login, admin, suspicious] = await Promise.all([
+            this.redisService.getAuditLogs('login', 50),
+            this.redisService.getAuditLogs('admin', 50),
+            this.redisService.getAuditLogs('suspicious', 50),
+        ]);
+        return { login, admin, suspicious };
     }
 }

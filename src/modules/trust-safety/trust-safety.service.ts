@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { User } from '../../database/entities/user.entity';
@@ -8,6 +8,7 @@ import { Message } from '../../database/entities/message.entity';
 import { ContentFlag, ContentFlagType, ContentFlagStatus, ContentFlagSource } from '../../database/entities/content-flag.entity';
 import { LoginHistory } from '../../database/entities/login-history.entity';
 import { RedisService } from '../redis/redis.service';
+import { CloudinaryService } from '../photos/cloudinary.service';
 
 const BAD_WORDS = [
     'fuck', 'shit', 'ass', 'bitch', 'dick', 'pussy', 'whore', 'slut',
@@ -33,20 +34,112 @@ export class TrustSafetyService {
         @InjectRepository(LoginHistory)
         private readonly loginHistoryRepository: Repository<LoginHistory>,
         private readonly redisService: RedisService,
+        private readonly cloudinaryService: CloudinaryService,
     ) { }
+
+    // ─── VERIFICATION UPLOADS ────────────────────────────────
+
+    async uploadSelfie(userId: string, file: Express.Multer.File) {
+        if (!file) throw new BadRequestException('No selfie file provided');
+
+        const result = await this.cloudinaryService.uploadImage(file);
+        await this.userRepository.update(userId, { selfieUrl: result.secure_url });
+
+        this.logger.log(`Selfie uploaded for user ${userId}`);
+        return {
+            message: 'Selfie uploaded successfully. Verification will begin automatically.',
+            selfieUrl: result.secure_url,
+        };
+    }
+
+    async uploadIdDocument(userId: string, file: Express.Multer.File) {
+        if (!file) throw new BadRequestException('No document file provided');
+
+        const result = await this.cloudinaryService.uploadImage(file);
+
+        // Store ID document URL in Redis (pending admin review)
+        await this.redisService.set(`id_doc:${userId}`, result.secure_url, 0);
+
+        // Create a content flag for admin review
+        await this.contentFlagRepository.save({
+            userId,
+            type: ContentFlagType.OTHER,
+            status: ContentFlagStatus.PENDING,
+            source: ContentFlagSource.USER_REPORT,
+            content: `ID document uploaded for verification: ${result.secure_url}`,
+            entityType: 'verification',
+            entityId: userId,
+            confidenceScore: 1.0,
+        });
+
+        this.logger.log(`ID document uploaded for user ${userId}`);
+        return {
+            message: 'ID document uploaded. It will be reviewed by our team within 24-48 hours.',
+            status: 'pending_review',
+        };
+    }
+
+    async uploadMarriageCert(userId: string, file: Express.Multer.File) {
+        if (!file) throw new BadRequestException('No certificate file provided');
+
+        const result = await this.cloudinaryService.uploadImage(file);
+
+        // Store marriage cert URL in Redis (pending admin review)
+        await this.redisService.set(`marriage_cert:${userId}`, result.secure_url, 0);
+
+        // Create a content flag for admin review
+        await this.contentFlagRepository.save({
+            userId,
+            type: ContentFlagType.OTHER,
+            status: ContentFlagStatus.PENDING,
+            source: ContentFlagSource.USER_REPORT,
+            content: `Marriage certificate uploaded for verification: ${result.secure_url}`,
+            entityType: 'verification',
+            entityId: userId,
+            confidenceScore: 1.0,
+        });
+
+        this.logger.log(`Marriage certificate uploaded for user ${userId}`);
+        return {
+            message: 'Marriage certificate uploaded. It will be reviewed by our team.',
+            status: 'pending_review',
+        };
+    }
+
+    async getVerificationStatus(userId: string) {
+        const user = await this.userRepository.findOne({
+            where: { id: userId },
+            select: ['id', 'selfieVerified', 'emailVerified', 'selfieUrl', 'trustScore'],
+        });
+
+        const idDocUrl = await this.redisService.get(`id_doc:${userId}`);
+        const marriageCertUrl = await this.redisService.get(`marriage_cert:${userId}`);
+
+        return {
+            emailVerified: user?.emailVerified ?? false,
+            selfieVerified: user?.selfieVerified ?? false,
+            selfieUploaded: !!user?.selfieUrl,
+            idDocumentUploaded: !!idDocUrl,
+            idDocumentStatus: idDocUrl ? 'pending_review' : 'not_uploaded',
+            marriageCertUploaded: !!marriageCertUrl,
+            marriageCertStatus: marriageCertUrl ? 'pending_review' : 'not_uploaded',
+            trustScore: user?.trustScore ?? 100,
+        };
+    }
 
     // ─── CONTENT MODERATION (BAD WORDS FILTER) ─────────────
 
     filterBadWords(text: string): { clean: string; hasBadWords: boolean; flaggedWords: string[] } {
-        const lowerText = text.toLowerCase();
         const flaggedWords: string[] = [];
         let clean = text;
 
         for (const word of BAD_WORDS) {
-            const regex = new RegExp(`\\b${word}\\b`, 'gi');
-            if (regex.test(lowerText)) {
+            // Use separate regex instances to avoid stateful lastIndex bug with 'g' flag
+            const testRegex = new RegExp(`\\b${word}\\b`, 'i');
+            if (testRegex.test(clean)) {
                 flaggedWords.push(word);
-                clean = clean.replace(regex, '*'.repeat(word.length));
+                const replaceRegex = new RegExp(`\\b${word}\\b`, 'gi');
+                clean = clean.replace(replaceRegex, '*'.repeat(word.length));
             }
         }
 

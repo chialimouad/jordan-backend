@@ -28,6 +28,11 @@ import {
     WorkoutFrequency,
     SleepSchedule,
     SocialMediaUsage,
+    Sect,
+    PrayerFrequency,
+    DietaryPreference,
+    AlcoholUsage,
+    HijabStatus,
 } from '../../../database/entities/profile.entity';
 
 export class CreateProfileDto {
@@ -65,6 +70,48 @@ export class CreateProfileDto {
     @IsOptional()
     @IsString()
     nationality?: string;
+
+    @ApiPropertyOptional({ type: [String], description: 'Up to 3 nationalities' })
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    nationalities?: string[];
+
+    @ApiPropertyOptional({ enum: Sect })
+    @IsOptional()
+    @IsEnum(Sect)
+    sect?: Sect;
+
+    @ApiPropertyOptional({ enum: PrayerFrequency })
+    @IsOptional()
+    @IsEnum(PrayerFrequency)
+    prayerFrequency?: PrayerFrequency;
+
+    @ApiPropertyOptional({ enum: DietaryPreference })
+    @IsOptional()
+    @IsEnum(DietaryPreference)
+    dietary?: DietaryPreference;
+
+    @ApiPropertyOptional({ enum: AlcoholUsage })
+    @IsOptional()
+    @IsEnum(AlcoholUsage)
+    alcohol?: AlcoholUsage;
+
+    @ApiPropertyOptional({ enum: HijabStatus, description: 'For females only' })
+    @IsOptional()
+    @IsEnum(HijabStatus)
+    hijabStatus?: HijabStatus;
+
+    @ApiPropertyOptional()
+    @IsOptional()
+    @IsString()
+    company?: string;
+
+    @ApiPropertyOptional({ type: [String], description: 'Family values tags' })
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    familyValues?: string[];
 
     // Extended fields
 

@@ -15,6 +15,8 @@ export enum NotificationType {
     LIKE = 'like',
     SYSTEM = 'system',
     SUBSCRIPTION = 'subscription',
+    PROFILE_VIEW = 'profile_view',
+    VERIFICATION = 'verification',
 }
 
 @Entity('notifications')

@@ -33,11 +33,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
                 errors = resp.errors || null;
             }
         } else if (exception instanceof Error) {
-            message = exception.message;
+            // Log full error internally but never expose to client
             this.logger.error(
                 `Unhandled exception: ${exception.message}`,
                 exception.stack,
             );
+            // In production, hide internal error details from response
+            message = process.env.NODE_ENV === 'development'
+                ? exception.message
+                : 'Internal server error';
         }
 
         response.status(status).json({

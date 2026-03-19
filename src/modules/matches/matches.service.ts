@@ -48,27 +48,38 @@ export class MatchesService {
             take: pagination.limit,
         });
 
-        const enriched = await Promise.all(
-            matches.map(async (match) => {
-                const otherUserId = match.user1Id === userId ? match.user2Id : match.user1Id;
-                const otherUser = match.user1Id === userId ? match.user2 : match.user1;
-                const photo = await this.photoRepository.findOne({
-                    where: { userId: otherUserId, isMain: true },
-                });
-                const isOnline = await this.redisService.isUserOnline(otherUserId);
-                return {
-                    id: match.id,
-                    matchedAt: match.matchedAt,
-                    user: {
-                        id: otherUser.id,
-                        firstName: otherUser.firstName,
-                        lastName: otherUser.lastName,
-                        photo: photo?.url || null,
-                        isOnline,
-                    },
-                };
-            }),
+        // Batch fetch photos for all matched users (avoids N+1)
+        const otherUserIds = matches.map(m => m.user1Id === userId ? m.user2Id : m.user1Id);
+        const photos = otherUserIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...otherUserIds)', { otherUserIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .getMany()
+            : [];
+        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+
+        // Batch check online status via Redis
+        const onlineChecks = await Promise.all(
+            otherUserIds.map(id => this.redisService.isUserOnline(id)),
         );
+        const onlineMap = new Map(otherUserIds.map((id, i) => [id, onlineChecks[i]]));
+
+        const enriched = matches.map((match) => {
+            const otherUserId = match.user1Id === userId ? match.user2Id : match.user1Id;
+            const otherUser = match.user1Id === userId ? match.user2 : match.user1;
+            return {
+                id: match.id,
+                matchedAt: match.matchedAt,
+                user: {
+                    id: otherUser.id,
+                    firstName: otherUser.firstName,
+                    lastName: otherUser.lastName,
+                    photo: photoMap.get(otherUserId) || null,
+                    isOnline: onlineMap.get(otherUserId) || false,
+                },
+            };
+        });
 
         return { matches: enriched, total, page: pagination.page, limit: pagination.limit };
     }
@@ -96,6 +107,11 @@ export class MatchesService {
 
         const excludeIds = await this.getExcludeIds(userId);
 
+        // Bounding box pre-filter: narrow candidates before expensive Haversine calc
+        // 1 degree latitude ≈ 111km; longitude varies by cos(lat)
+        const latDelta = radiusKm / 111;
+        const lngDelta = radiusKm / (111 * Math.cos(this.toRad(Number(profile.latitude))));
+
         // Haversine formula in SQL for distance calculation
         const query = this.profileRepository
             .createQueryBuilder('profile')
@@ -109,6 +125,15 @@ export class MatchesService {
             .andWhere('user.locationEnabled = :locEnabled', { locEnabled: true })
             .andWhere('profile.latitude IS NOT NULL')
             .andWhere('profile.longitude IS NOT NULL')
+            // Bounding box filter (uses indexes, avoids full-table Haversine)
+            .andWhere('profile.latitude BETWEEN :minLat AND :maxLat', {
+                minLat: Number(profile.latitude) - latDelta,
+                maxLat: Number(profile.latitude) + latDelta,
+            })
+            .andWhere('profile.longitude BETWEEN :minLng AND :maxLng', {
+                minLng: Number(profile.longitude) - lngDelta,
+                maxLng: Number(profile.longitude) + lngDelta,
+            })
             .having('distance <= :radius', { radius: radiusKm })
             .setParameters({ lat: profile.latitude, lng: profile.longitude })
             .orderBy('distance', 'ASC')
@@ -116,26 +141,32 @@ export class MatchesService {
 
         const results = await query.getRawAndEntities();
 
-        const enriched = await Promise.all(
-            results.entities.map(async (p, index) => {
-                const photo = await this.photoRepository.findOne({
-                    where: { userId: p.userId, isMain: true },
-                });
-                const rawDistance = results.raw[index]?.distance;
-                return {
-                    userId: p.userId,
-                    firstName: p.user?.firstName,
-                    lastName: p.user?.lastName,
-                    age: this.calculateAge(p.dateOfBirth),
-                    bio: p.bio,
-                    city: p.city,
-                    gender: p.gender,
-                    religiousLevel: p.religiousLevel,
-                    distanceKm: rawDistance ? Math.round(parseFloat(rawDistance) * 10) / 10 : null,
-                    photo: photo?.url || null,
-                };
-            }),
-        );
+        // Batch fetch photos (avoids N+1)
+        const nearbyUserIds = results.entities.map(p => p.userId);
+        const photos = nearbyUserIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...nearbyUserIds)', { nearbyUserIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .getMany()
+            : [];
+        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+
+        const enriched = results.entities.map((p, index) => {
+            const rawDistance = results.raw[index]?.distance;
+            return {
+                userId: p.userId,
+                firstName: p.user?.firstName,
+                lastName: p.user?.lastName,
+                age: this.calculateAge(p.dateOfBirth),
+                bio: p.bio,
+                city: p.city,
+                gender: p.gender,
+                religiousLevel: p.religiousLevel,
+                distanceKm: rawDistance ? Math.round(parseFloat(rawDistance) * 10) / 10 : null,
+                photo: photoMap.get(p.userId) || null,
+            };
+        });
 
         return enriched;
     }
@@ -143,17 +174,25 @@ export class MatchesService {
     // ─── DISCOVERY CATEGORIES ───────────────────────────────
 
     async getDiscoveryCategories(userId: string) {
+        // Cache entire discovery response (5 min TTL)
+        const cacheKey = `discovery:${userId}`;
+        const cached = await this.redisService.getJson<any>(cacheKey);
+        if (cached) return cached;
+
         const [nearby, compatible, newUsers] = await Promise.all([
             this.getNearbyUsers(userId, 30, 10),
             this.getSuggestions(userId, 10),
             this.getNewUsers(userId, 10),
         ]);
 
-        return {
+        const result = {
             nearby: { title: 'Nearby', users: nearby },
             compatible: { title: 'Most Compatible', users: compatible },
             newUsers: { title: 'New Members', users: newUsers },
         };
+
+        await this.redisService.setJson(cacheKey, result, 300);
+        return result;
     }
 
     private async getNewUsers(userId: string, limit: number) {
@@ -170,22 +209,26 @@ export class MatchesService {
             .take(limit)
             .getMany();
 
-        return Promise.all(
-            profiles.map(async (p) => {
-                const photo = await this.photoRepository.findOne({
-                    where: { userId: p.userId, isMain: true },
-                });
-                return {
-                    userId: p.userId,
-                    firstName: p.user?.firstName,
-                    lastName: p.user?.lastName,
-                    age: this.calculateAge(p.dateOfBirth),
-                    bio: p.bio,
-                    city: p.city,
-                    photo: photo?.url || null,
-                };
-            }),
-        );
+        // Batch fetch photos (avoids N+1)
+        const newUserIds = profiles.map(p => p.userId);
+        const photos = newUserIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...newUserIds)', { newUserIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .getMany()
+            : [];
+        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+
+        return profiles.map((p) => ({
+            userId: p.userId,
+            firstName: p.user?.firstName,
+            lastName: p.user?.lastName,
+            age: this.calculateAge(p.dateOfBirth),
+            bio: p.bio,
+            city: p.city,
+            photo: photoMap.get(p.userId) || null,
+        }));
     }
 
     // ─── SUGGESTIONS ────────────────────────────────────────
@@ -246,31 +289,37 @@ export class MatchesService {
 
         const suggestions = await query.getMany();
 
-        const enriched = await Promise.all(
-            suggestions.map(async (p) => {
-                const photo = await this.photoRepository.findOne({
-                    where: { userId: p.userId, isMain: true },
-                });
-                const distanceKm = (profile.latitude && profile.longitude && p.latitude && p.longitude)
-                    ? this.haversineDistance(profile.latitude, profile.longitude, p.latitude, p.longitude)
-                    : null;
-                return {
-                    userId: p.userId,
-                    firstName: p.user?.firstName,
-                    lastName: p.user?.lastName,
-                    age: this.calculateAge(p.dateOfBirth),
-                    bio: p.bio,
-                    city: p.city,
-                    country: p.country,
-                    gender: p.gender,
-                    religiousLevel: p.religiousLevel,
-                    marriageIntention: p.marriageIntention,
-                    interests: p.interests,
-                    distanceKm: distanceKm !== null ? Math.round(distanceKm * 10) / 10 : null,
-                    photo: photo?.url || null,
-                };
-            }),
-        );
+        // Batch fetch photos (avoids N+1)
+        const suggestionUserIds = suggestions.map(p => p.userId);
+        const photos = suggestionUserIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...suggestionUserIds)', { suggestionUserIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .getMany()
+            : [];
+        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+
+        const enriched = suggestions.map((p) => {
+            const distanceKm = (profile.latitude && profile.longitude && p.latitude && p.longitude)
+                ? this.haversineDistance(profile.latitude, profile.longitude, p.latitude, p.longitude)
+                : null;
+            return {
+                userId: p.userId,
+                firstName: p.user?.firstName,
+                lastName: p.user?.lastName,
+                age: this.calculateAge(p.dateOfBirth),
+                bio: p.bio,
+                city: p.city,
+                country: p.country,
+                gender: p.gender,
+                religiousLevel: p.religiousLevel,
+                marriageIntention: p.marriageIntention,
+                interests: p.interests,
+                distanceKm: distanceKm !== null ? Math.round(distanceKm * 10) / 10 : null,
+                photo: photoMap.get(p.userId) || null,
+            };
+        });
 
         await this.redisService.setJson(cacheKey, enriched, 600);
         return enriched;
@@ -279,26 +328,35 @@ export class MatchesService {
     // ─── PRIVATE HELPERS ────────────────────────────────────
 
     private async getExcludeIds(userId: string): Promise<string[]> {
-        const blockedUsers = await this.blockedUserRepository.find({
-            where: [{ blockerId: userId }, { blockedId: userId }],
-        });
+        // Check Redis cache first (60s TTL)
+        const cacheKey = `excludeIds:${userId}`;
+        const cached = await this.redisService.getJson<string[]>(cacheKey);
+        if (cached && cached.length > 0) return cached;
+
+        // Run all 3 queries in parallel instead of sequentially
+        const [blockedUsers, swipedLikes, matches] = await Promise.all([
+            this.blockedUserRepository.find({
+                where: [{ blockerId: userId }, { blockedId: userId }],
+            }),
+            this.likeRepository.find({
+                where: { likerId: userId },
+                select: ['likedId'],
+            }),
+            this.matchRepository.find({
+                where: [
+                    { user1Id: userId, status: MatchStatus.ACTIVE },
+                    { user2Id: userId, status: MatchStatus.ACTIVE },
+                ],
+            }),
+        ]);
+
         const blockedIds = blockedUsers.map((b) => b.blockerId === userId ? b.blockedId : b.blockerId);
-
-        const swipedLikes = await this.likeRepository.find({
-            where: { likerId: userId },
-            select: ['likedId'],
-        });
         const swipedIds = swipedLikes.map((l) => l.likedId);
-
-        const matches = await this.matchRepository.find({
-            where: [
-                { user1Id: userId, status: MatchStatus.ACTIVE },
-                { user2Id: userId, status: MatchStatus.ACTIVE },
-            ],
-        });
         const matchedIds = matches.map((m) => m.user1Id === userId ? m.user2Id : m.user1Id);
 
-        return [...new Set([userId, ...blockedIds, ...swipedIds, ...matchedIds])];
+        const excludeIds = [...new Set([userId, ...blockedIds, ...swipedIds, ...matchedIds])];
+        await this.redisService.setJson(cacheKey, excludeIds, 60);
+        return excludeIds;
     }
 
     private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {

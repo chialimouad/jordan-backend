@@ -3,13 +3,15 @@ import {
     IsEnum,
     IsInt,
     IsString,
+    IsBoolean,
+    IsNumber,
     Min,
     Max,
     IsArray,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Gender, MaritalStatus, ReligiousLevel } from '../../../database/entities/profile.entity';
+import { Gender, MaritalStatus, ReligiousLevel, EducationLevel } from '../../../database/entities/profile.entity';
 
 export class SearchFiltersDto {
     @ApiPropertyOptional({ minimum: 18 })
@@ -55,6 +57,30 @@ export class SearchFiltersDto {
     @IsOptional()
     @IsString()
     ethnicity?: string;
+
+    @ApiPropertyOptional({ enum: EducationLevel })
+    @IsOptional()
+    @IsEnum(EducationLevel)
+    education?: EducationLevel;
+
+    @ApiPropertyOptional({ type: [String], description: 'Filter by interests' })
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    interests?: string[];
+
+    @ApiPropertyOptional({ description: 'Only show verified users' })
+    @IsOptional()
+    @IsBoolean()
+    verifiedOnly?: boolean;
+
+    @ApiPropertyOptional({ description: 'Max distance in km (requires user location)' })
+    @IsOptional()
+    @Type(() => Number)
+    @IsNumber()
+    @Min(1)
+    @Max(500)
+    maxDistance?: number;
 
     @ApiPropertyOptional({ description: 'Search text in bio' })
     @IsOptional()

@@ -16,6 +16,7 @@ export enum ContentFlagType {
     HARASSMENT = 'harassment',
     INAPPROPRIATE_PHOTO = 'inappropriate_photo',
     FAKE_PROFILE = 'fake_profile',
+    OTHER = 'other',
 }
 
 export enum ContentFlagStatus {

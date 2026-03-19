@@ -6,6 +6,7 @@ import {
     HttpStatus,
     UseGuards,
     Patch,
+    Req,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
@@ -69,8 +70,8 @@ export class AuthController {
     @ApiResponse({ status: 200, description: 'Login successful' })
     @ApiResponse({ status: 401, description: 'Invalid credentials' })
     @ApiResponse({ status: 429, description: 'Too many login attempts' })
-    async login(@Body() loginDto: LoginDto) {
-        return this.authService.login(loginDto);
+    async login(@Body() loginDto: LoginDto, @Req() req: any) {
+        return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
     }
 
     // ─── Token Management ───────────────────────────────────
@@ -89,9 +90,18 @@ export class AuthController {
     @Post('logout')
     @HttpCode(HttpStatus.OK)
     @ApiBearerAuth()
-    @ApiOperation({ summary: 'Logout and invalidate refresh token' })
-    async logout(@CurrentUser('sub') userId: string) {
-        return this.authService.logout(userId);
+    @ApiOperation({ summary: 'Logout and invalidate refresh token + blacklist access token' })
+    async logout(@CurrentUser('sub') userId: string, @CurrentUser('jti') jti: string) {
+        return this.authService.logout(userId, jti);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Post('revoke-all-sessions')
+    @HttpCode(HttpStatus.OK)
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Revoke all active sessions for the current user' })
+    async revokeAllSessions(@CurrentUser('sub') userId: string) {
+        return this.authService.revokeAllSessions(userId);
     }
 
     // ─── Forgot Password Flow ───────────────────────────────

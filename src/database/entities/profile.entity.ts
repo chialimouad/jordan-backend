@@ -108,6 +108,36 @@ export enum SocialMediaUsage {
     NONE = 'none',
 }
 
+export enum Sect {
+    SUNNI = 'sunni',
+    SHIA = 'shia',
+    SUFI = 'sufi',
+    OTHER = 'other',
+    PREFER_NOT_TO_SAY = 'prefer_not_to_say',
+}
+
+export enum PrayerFrequency {
+    ACTIVELY_PRACTICING = 'actively_practicing',
+    OCCASIONALLY = 'occasionally',
+    NOT_PRACTICING = 'not_practicing',
+}
+
+export enum DietaryPreference {
+    HALAL = 'halal',
+    NON_STRICT = 'non_strict',
+}
+
+export enum AlcoholUsage {
+    DOESNT_DRINK = 'doesnt_drink',
+    DRINKS = 'drinks',
+}
+
+export enum HijabStatus {
+    COVERED = 'covered',
+    NIQAB = 'niqab',
+    NOT_COVERED = 'not_covered',
+}
+
 @Entity('profiles')
 export class Profile {
     @PrimaryGeneratedColumn('uuid')
@@ -145,6 +175,30 @@ export class Profile {
 
     @Column({ nullable: true })
     nationality: string;
+
+    @Column({ type: 'simple-array', nullable: true })
+    nationalities: string[]; // up to 3
+
+    @Column({ type: 'enum', enum: Sect, nullable: true })
+    sect: Sect;
+
+    @Column({ type: 'enum', enum: PrayerFrequency, nullable: true })
+    prayerFrequency: PrayerFrequency;
+
+    @Column({ type: 'enum', enum: DietaryPreference, nullable: true })
+    dietary: DietaryPreference;
+
+    @Column({ type: 'enum', enum: AlcoholUsage, nullable: true })
+    alcohol: AlcoholUsage;
+
+    @Column({ type: 'enum', enum: HijabStatus, nullable: true })
+    hijabStatus: HijabStatus; // for females only
+
+    @Column({ nullable: true })
+    company: string;
+
+    @Column({ type: 'simple-array', nullable: true })
+    familyValues: string[]; // e.g. ['strong_family_bonds', 'desires_children', 'shared_responsibilities']
 
     // --- Extended Profile ---
 
