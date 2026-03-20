@@ -36,7 +36,7 @@ const dbLogger = new Logger('DatabaseModule');
                     ...connectionConfig,
                     ssl: { rejectUnauthorized: false },
                     autoLoadEntities: true,
-                    synchronize: !isProduction,
+                    synchronize: true, // TODO: switch to migrations before real production launch
                     logging: !isProduction,
                     entities: [__dirname + '/entities/**/*.entity{.ts,.js}'],
                     retryAttempts: 5,
