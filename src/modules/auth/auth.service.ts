@@ -54,7 +54,7 @@ export class AuthService {
                 const hashedPassword = await bcrypt.hash(password, salt);
                 const otp = this.generateOtp();
                 const otpExpiry = new Date(
-                    Date.now() + this.configService.get<number>('otp.expirySeconds', 30) * 1000,
+                    Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
                 );
 
                 existingUser.password = hashedPassword;
@@ -96,7 +96,7 @@ export class AuthService {
 
         const otp = this.generateOtp();
         const otpExpiry = new Date(
-            Date.now() + this.configService.get<number>('otp.expirySeconds', 30) * 1000,
+            Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
         );
 
         const user = this.userRepository.create({
@@ -231,7 +231,7 @@ export class AuthService {
 
         const otp = this.generateOtp();
         const otpExpiry = new Date(
-            Date.now() + this.configService.get<number>('otp.expirySeconds', 30) * 1000,
+            Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
         );
         const cooldownUntil = new Date(Date.now() + cooldownSeconds * 1000);
 
@@ -374,7 +374,7 @@ export class AuthService {
 
         const otp = this.generateOtp();
         const otpExpiry = new Date(
-            Date.now() + this.configService.get<number>('otp.expirySeconds', 30) * 1000,
+            Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
         );
 
         await this.userRepository.update(user.id, {
