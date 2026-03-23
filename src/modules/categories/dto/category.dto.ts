@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEnum, IsArray, ValidateNested, IsInt, Min, MaxLength, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsArray, ValidateNested, IsInt, Min, MaxLength, IsIn, IsNotEmpty } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { CategoryStatus, RuleCondition } from '../../../database/entities/category.entity';
@@ -13,6 +13,7 @@ export class RuleConditionDto {
     operator: RuleCondition['operator'];
 
     @ApiProperty({ example: 'very_practicing' })
+    @IsNotEmpty()
     value: string | number | boolean;
 }
 

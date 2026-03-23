@@ -16,7 +16,10 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@ne
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { UserRole } from '../../database/entities/user.entity';
 
 @ApiTags('categories')
 @Controller('categories')
@@ -31,6 +34,14 @@ export class CategoriesController {
     @ApiResponse({ status: 200, description: 'List of active categories' })
     async findAll() {
         return this.categoriesService.findAll(false);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @Get('admin/all')
+    @ApiBearerAuth()
+    @ApiOperation({ summary: 'Get all categories including inactive (admin)' })
+    async findAllAdmin() {
+        return this.categoriesService.findAll(true);
     }
 
     @Public()
@@ -57,7 +68,8 @@ export class CategoriesController {
 
     // ─── Admin Endpoints ─────────────────────────────────────
 
-    @UseGuards(JwtAuthGuard)
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(UserRole.ADMIN)
     @Post()
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Create a new category (admin)' })
@@ -66,7 +78,8 @@ export class CategoriesController {
         return this.categoriesService.create(dto);
     }
 
-    @UseGuards(JwtAuthGuard)
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(UserRole.ADMIN)
     @Patch(':id')
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Update a category (admin)' })
@@ -78,7 +91,8 @@ export class CategoriesController {
         return this.categoriesService.update(id, dto);
     }
 
-    @UseGuards(JwtAuthGuard)
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(UserRole.ADMIN)
     @Delete(':id')
     @ApiBearerAuth()
     @HttpCode(HttpStatus.NO_CONTENT)
@@ -87,7 +101,8 @@ export class CategoriesController {
         return this.categoriesService.remove(id);
     }
 
-    @UseGuards(JwtAuthGuard)
+    @UseGuards(JwtAuthGuard, RolesGuard)
+    @Roles(UserRole.ADMIN)
     @Post(':id/rebuild')
     @ApiBearerAuth()
     @ApiOperation({ summary: 'Rebuild category user assignments based on rules (admin)' })
@@ -97,11 +112,4 @@ export class CategoriesController {
         return { message: `Category rebuilt with ${count} users`, userCount: count };
     }
 
-    @UseGuards(JwtAuthGuard)
-    @Get('admin/all')
-    @ApiBearerAuth()
-    @ApiOperation({ summary: 'Get all categories including inactive (admin)' })
-    async findAllAdmin() {
-        return this.categoriesService.findAll(true);
-    }
 }
