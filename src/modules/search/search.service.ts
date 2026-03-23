@@ -39,8 +39,7 @@ export class SearchService {
             .createQueryBuilder('profile')
             .leftJoinAndSelect('profile.user', 'user')
             .where('profile.userId NOT IN (:...excludeIds)', { excludeIds })
-            .andWhere('user.status = :status', { status: 'active' })
-            .andWhere('profile.isComplete = :complete', { complete: true });
+            .andWhere('user.status = :status', { status: 'active' });
 
         // Apply filters
         if (filters.gender) {
@@ -180,37 +179,88 @@ export class SearchService {
 
         const [profiles, total] = await query.getManyAndCount();
 
-        // Batch fetch main photos for all profiles (avoids N+1 query)
+        // Batch fetch ALL photos for all profiles (avoids N+1 query)
         const userIds = profiles.map(p => p.userId);
         const photos = userIds.length > 0
             ? await this.photoRepository
                 .createQueryBuilder('photo')
                 .where('photo.userId IN (:...userIds)', { userIds })
-                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .orderBy('photo.isMain', 'DESC')
+                .addOrderBy('photo.order', 'ASC')
                 .getMany()
             : [];
-        const photoMap = new Map(photos.map(p => [p.userId, p.url]));
+        // Group photos by userId
+        const photosMap = new Map<string, any[]>();
+        for (const photo of photos) {
+            if (!photosMap.has(photo.userId)) photosMap.set(photo.userId, []);
+            photosMap.get(photo.userId)!.push({
+                id: photo.id,
+                url: photo.url,
+                publicId: photo.publicId,
+                isMain: photo.isMain,
+                isSelfieVerification: photo.isSelfieVerification,
+                order: photo.order,
+                moderationStatus: photo.moderationStatus,
+                moderationNote: photo.moderationNote,
+                createdAt: photo.createdAt,
+            });
+        }
 
-        const results = profiles.map((p) => ({
-            userId: p.userId,
-            firstName: p.user?.firstName,
-            lastName: p.user?.lastName,
-            age: this.calculateAge(p.dateOfBirth),
-            bio: p.bio,
-            city: p.city,
-            country: p.country,
-            gender: p.gender,
-            religiousLevel: p.religiousLevel,
-            maritalStatus: p.maritalStatus,
-            interests: p.interests,
-            photo: photoMap.get(p.userId) || null,
+        // Return enriched user objects matching Flutter UserModel.fromJson format
+        const users = profiles.map((p) => ({
+            id: p.userId,
+            username: p.user?.username || null,
+            email: p.user?.email || '',
+            firstName: p.user?.firstName || null,
+            lastName: p.user?.lastName || null,
+            phone: p.user?.phone || null,
+            role: p.user?.role || 'user',
+            status: p.user?.status || 'active',
+            emailVerified: p.user?.emailVerified || false,
+            selfieVerified: p.user?.selfieVerified || false,
+            isShadowBanned: p.user?.isShadowBanned || false,
+            trustScore: p.user?.trustScore || 100,
+            flagCount: p.user?.flagCount || 0,
+            deviceCount: p.user?.deviceCount || 0,
+            notificationsEnabled: p.user?.notificationsEnabled || true,
+            lastLoginAt: p.user?.lastLoginAt || null,
+            createdAt: p.user?.createdAt || new Date(),
+            updatedAt: p.user?.updatedAt || new Date(),
+            photos: photosMap.get(p.userId) || [],
+            profile: {
+                id: p.id,
+                gender: p.gender,
+                dateOfBirth: p.dateOfBirth,
+                bio: p.bio,
+                ethnicity: p.ethnicity,
+                nationality: p.nationality,
+                city: p.city,
+                country: p.country,
+                latitude: p.latitude,
+                longitude: p.longitude,
+                religiousLevel: p.religiousLevel,
+                sect: p.sect,
+                prayerFrequency: p.prayerFrequency,
+                marriageIntention: p.marriageIntention,
+                maritalStatus: p.maritalStatus,
+                education: p.education,
+                jobTitle: p.jobTitle,
+                company: p.company,
+                height: p.height,
+                weight: p.weight,
+                interests: p.interests,
+                languages: p.languages,
+                profileCompletionPercentage: p.profileCompletionPercentage || 0,
+                activityScore: p.activityScore || 0,
+                isComplete: p.isComplete || false,
+            },
         }));
 
         const response = {
-            results,
+            users,
             total,
-            page: filters.page,
-            limit: filters.limit,
+            page: filters.page ?? 1,
+            limit: filters.limit ?? 20,
         };
 
         // Cache for 5 minutes
