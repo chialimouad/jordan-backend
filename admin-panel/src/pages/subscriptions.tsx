@@ -12,6 +12,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { formatDateTime } from '@/lib/utils'
 import {
@@ -24,6 +26,7 @@ import {
   ChevronRight,
   Eye,
   Rocket,
+  Edit2
 } from 'lucide-react'
 
 export default function SubscriptionsPage() {
@@ -40,6 +43,16 @@ export default function SubscriptionsPage() {
   const [boosts, setBoosts] = useState<any[]>([])
   const [boostsLoading, setBoostsLoading] = useState(false)
   const [showBoosts, setShowBoosts] = useState(false)
+
+  // Override State
+  const [plans, setPlans] = useState<any[]>([])
+  const [isOverrideModalOpen, setIsOverrideModalOpen] = useState(false)
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null)
+  const [overrideData, setOverrideData] = useState({ planId: '', durationDays: 30 })
+
+  useEffect(() => {
+    adminApi.getPlans().then(res => setPlans(res.data)).catch(console.error)
+  }, [])
 
   const fetchSubscriptions = async () => {
     setLoading(true)
@@ -251,6 +264,12 @@ export default function SubscriptionsPage() {
                         <td className="py-3 pr-4 text-muted-foreground text-xs">{sub.startDate ? formatDateTime(sub.startDate) : '-'}</td>
                         <td className="py-3 pr-4 text-muted-foreground text-xs">{sub.endDate ? formatDateTime(sub.endDate) : '-'}</td>
                         <td className="py-3 text-right">
+                          <Button size="icon" variant="ghost" onClick={() => {
+                            setSelectedUserId(sub.userId)
+                            setIsOverrideModalOpen(true)
+                          }}>
+                            <Edit2 className="h-4 w-4 text-blue-500" />
+                          </Button>
                           <Button size="icon" variant="ghost" onClick={() => navigate(`/users/${sub.userId}`)}>
                             <Eye className="h-4 w-4" />
                           </Button>
@@ -278,6 +297,43 @@ export default function SubscriptionsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Override Modal */}
+      {isOverrideModalOpen && (
+        <Dialog open={isOverrideModalOpen} onOpenChange={setIsOverrideModalOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Override User Subscription</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-medium">Select Plan</label>
+                <Select value={overrideData.planId} onValueChange={v => setOverrideData({...overrideData, planId: v})}>
+                  <SelectTrigger><SelectValue placeholder="Select a plan..." /></SelectTrigger>
+                  <SelectContent>
+                    {plans.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Duration (Days)</label>
+                <Input type="number" value={overrideData.durationDays} onChange={e => setOverrideData({...overrideData, durationDays: Number(e.target.value)})} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsOverrideModalOpen(false)}>Cancel</Button>
+              <Button onClick={async () => {
+                if (!selectedUserId || !overrideData.planId) return;
+                try {
+                  await adminApi.overrideSubscription(selectedUserId, overrideData)
+                  setIsOverrideModalOpen(false)
+                  fetchSubscriptions()
+                } catch(e) { console.error(e) }
+              }}>Save Override</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

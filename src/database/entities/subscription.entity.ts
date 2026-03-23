@@ -9,6 +9,7 @@ import {
     Index,
 } from 'typeorm';
 import { User } from './user.entity';
+import { Plan } from './plan.entity';
 
 export enum SubscriptionPlan {
     FREE = 'free',
@@ -37,6 +38,13 @@ export class Subscription {
     @ManyToOne(() => User, { onDelete: 'CASCADE' })
     @JoinColumn({ name: 'userId' })
     user: User;
+
+    @ManyToOne(() => Plan, plan => plan.subscriptions, { onDelete: 'SET NULL', nullable: true })
+    @JoinColumn({ name: 'planId' })
+    planEntity: Plan;
+
+    @Column({ nullable: true })
+    planId: string;
 
     @Column({ type: 'enum', enum: SubscriptionPlan, default: SubscriptionPlan.FREE })
     plan: SubscriptionPlan;

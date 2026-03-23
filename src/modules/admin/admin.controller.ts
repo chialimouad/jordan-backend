@@ -340,6 +340,42 @@ export class AdminController {
         return this.adminService.getBoosts(pagination);
     }
 
+    // ─── PLANS ──────────────────────────────────────────────
+
+    @Get('plans')
+    @ApiOperation({ summary: 'List all subscription plans' })
+    async getPlans() {
+        return this.adminService.getPlans();
+    }
+
+    @Post('plans')
+    @ApiOperation({ summary: 'Create a new subscription plan' })
+    async createPlan(@Body() dto: any) {
+        return this.adminService.createPlan(dto);
+    }
+
+    @Put('plans/:id')
+    @ApiOperation({ summary: 'Update a subscription plan' })
+    async updatePlan(@Param('id') id: string, @Body() dto: any) {
+        return this.adminService.updatePlan(id, dto);
+    }
+
+    @Delete('plans/:id')
+    @HttpCode(HttpStatus.NO_CONTENT)
+    @ApiOperation({ summary: 'Delete a subscription plan' })
+    async deletePlan(@Param('id') id: string) {
+        return this.adminService.deletePlan(id);
+    }
+
+    @Post('users/:id/subscription/override')
+    @ApiOperation({ summary: 'Override user subscription plan manually' })
+    async overrideUserSubscription(
+        @Param('id') userId: string,
+        @Body() dto: { planId: string; durationDays: number },
+    ) {
+        return this.adminService.overrideUserSubscription(userId, dto.planId, dto.durationDays);
+    }
+
     // ─── SUBSCRIPTIONS ──────────────────────────────────────
 
     @Get('subscriptions')

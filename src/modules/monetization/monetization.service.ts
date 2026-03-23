@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { User } from '../../database/entities/user.entity';
 import { Subscription, SubscriptionPlan, SubscriptionStatus } from '../../database/entities/subscription.entity';
+import { Plan } from '../../database/entities/plan.entity';
 import { Boost, BoostType } from '../../database/entities/boost.entity';
 import { RedisService } from '../redis/redis.service';
 
@@ -32,56 +33,10 @@ export enum FeatureFlag {
  *   invisible mode, premium badge, hide ads, passport mode
  * GOLD (Elite - future): all premium + video chat
  */
-const PLAN_FEATURES: Record<SubscriptionPlan, FeatureFlag[]> = {
-    [SubscriptionPlan.FREE]: [
-        FeatureFlag.PASSPORT_MODE, // available for now, will move to premium later
-    ],
-    [SubscriptionPlan.PREMIUM]: [
-        FeatureFlag.UNLIMITED_LIKES,
-        FeatureFlag.ADVANCED_FILTERS,
-        FeatureFlag.SEE_WHO_LIKED,
-        FeatureFlag.SUPER_LIKE,
-        FeatureFlag.READ_RECEIPTS,
-        FeatureFlag.REWIND,
-        FeatureFlag.COMPLIMENT_CREDITS,
-        FeatureFlag.PROFILE_BOOST,
-        FeatureFlag.REMATCH,
-        FeatureFlag.IMPROVED_VISITS,
-        FeatureFlag.INVISIBLE_MODE,
-        FeatureFlag.PREMIUM_BADGE,
-        FeatureFlag.HIDE_ADS,
-        FeatureFlag.PASSPORT_MODE,
-    ],
-    [SubscriptionPlan.GOLD]: [
-        FeatureFlag.UNLIMITED_LIKES,
-        FeatureFlag.ADVANCED_FILTERS,
-        FeatureFlag.SEE_WHO_LIKED,
-        FeatureFlag.SUPER_LIKE,
-        FeatureFlag.PROFILE_BOOST,
-        FeatureFlag.READ_RECEIPTS,
-        FeatureFlag.PRIORITY_MATCHING,
-        FeatureFlag.REWIND,
-        FeatureFlag.INVISIBLE_MODE,
-        FeatureFlag.COMPLIMENT_CREDITS,
-        FeatureFlag.REMATCH,
-        FeatureFlag.PREMIUM_BADGE,
-        FeatureFlag.HIDE_ADS,
-        FeatureFlag.PASSPORT_MODE,
-        FeatureFlag.IMPROVED_VISITS,
-    ],
-};
-
-const DAILY_LIMITS: Record<SubscriptionPlan, { likes: number; superLikes: number; complimentCredits: number }> = {
-    [SubscriptionPlan.FREE]: { likes: 10, superLikes: 0, complimentCredits: 0 },
-    [SubscriptionPlan.PREMIUM]: { likes: -1, superLikes: 5, complimentCredits: 1 }, // -1 = unlimited
-    [SubscriptionPlan.GOLD]: { likes: -1, superLikes: -1, complimentCredits: 3 },
-};
-
-const MONTHLY_LIMITS: Record<SubscriptionPlan, { rewinds: number; weeklyBoosts: number }> = {
-    [SubscriptionPlan.FREE]: { rewinds: 2, weeklyBoosts: 0 },
-    [SubscriptionPlan.PREMIUM]: { rewinds: -1, weeklyBoosts: 4 }, // -1 = unlimited
-    [SubscriptionPlan.GOLD]: { rewinds: -1, weeklyBoosts: -1 },
-};
+// Default limits if no plan is found in DB
+const DEFAULT_FREE_FEATURES = [FeatureFlag.PASSPORT_MODE];
+const DEFAULT_FREE_LIMITS = { likes: 10, superLikes: 0, complimentCredits: 0 };
+const DEFAULT_FREE_MONTHLY_LIMITS = { rewinds: 2, weeklyBoosts: 0 };
 
 @Injectable()
 export class MonetizationService {
@@ -92,47 +47,60 @@ export class MonetizationService {
         private readonly userRepository: Repository<User>,
         @InjectRepository(Subscription)
         private readonly subscriptionRepository: Repository<Subscription>,
+        @InjectRepository(Plan)
+        private readonly planRepository: Repository<Plan>,
         @InjectRepository(Boost)
         private readonly boostRepository: Repository<Boost>,
         private readonly redisService: RedisService,
     ) { }
 
     // ─── SUBSCRIPTION MANAGEMENT ────────────────────────────
-
-    async getUserPlan(userId: string): Promise<SubscriptionPlan> {
-        const cacheKey = `plan:${userId}`;
-        const cached = await this.redisService.get(cacheKey);
-        if (cached) return cached as SubscriptionPlan;
-
+    
+    async getEffectivePlan(userId: string): Promise<Plan | null> {
         const sub = await this.subscriptionRepository.findOne({
             where: { userId, status: SubscriptionStatus.ACTIVE },
             order: { createdAt: 'DESC' },
+            relations: ['planEntity'],
         });
 
-        const plan = sub?.plan || SubscriptionPlan.FREE;
-
-        // Check expiry
         if (sub && sub.endDate && new Date(sub.endDate) < new Date()) {
             await this.subscriptionRepository.update(sub.id, { status: SubscriptionStatus.EXPIRED });
-            await this.redisService.set(cacheKey, SubscriptionPlan.FREE, 3600);
-            return SubscriptionPlan.FREE;
+            return this.planRepository.findOne({ where: { name: 'BASIC' } });
         }
 
-        await this.redisService.set(cacheKey, plan, 3600);
-        return plan;
+        if (sub && sub.planEntity) {
+            return sub.planEntity;
+        }
+
+        return this.planRepository.findOne({ where: { name: 'BASIC' } }); // default fallback
+    }
+
+    async getUserPlan(userId: string): Promise<string> {
+        const cacheKey = `plan:${userId}`;
+        const cached = await this.redisService.get(cacheKey);
+        if (cached) return cached;
+
+        const effectivePlan = await this.getEffectivePlan(userId);
+        const planName = effectivePlan?.name?.toLowerCase() || 'free';
+
+        await this.redisService.set(cacheKey, planName, 3600);
+        return planName;
     }
 
     async isPremium(userId: string): Promise<boolean> {
         const plan = await this.getUserPlan(userId);
-        return plan !== SubscriptionPlan.FREE;
+        return plan !== 'free' && plan !== 'basic';
     }
 
     async purchaseSubscription(
         userId: string,
-        plan: SubscriptionPlan,
+        planName: string,
         durationDays: number,
         paymentReference: string,
     ): Promise<Subscription> {
+        const planEntity = await this.planRepository.findOne({ where: { name: planName.toUpperCase() } });
+        if (!planEntity) throw new BadRequestException('Plan not found');
+
         // Cancel existing active subscription
         await this.subscriptionRepository.update(
             { userId, status: SubscriptionStatus.ACTIVE },
@@ -144,7 +112,8 @@ export class MonetizationService {
 
         const sub = this.subscriptionRepository.create({
             userId,
-            plan,
+            planId: planEntity.id,
+            planEntity,
             status: SubscriptionStatus.ACTIVE,
             startDate,
             endDate,
@@ -157,8 +126,16 @@ export class MonetizationService {
         await this.redisService.del(`plan:${userId}`);
         await this.redisService.del(`features:${userId}`);
 
-        this.logger.log(`User ${userId} purchased ${plan} for ${durationDays} days`);
+        this.logger.log(`User ${userId} purchased plan ${planEntity.name} for ${durationDays} days`);
         return saved;
+    }
+
+    // ─── GET ACTIVE PLANS ───────────────────────────────────
+    async getActivePlans(): Promise<Plan[]> {
+        return this.planRepository.find({ 
+            where: { isActive: true },
+            order: { price: 'ASC' }
+        });
     }
 
     // ─── FEATURE FLAGS ──────────────────────────────────────
@@ -168,8 +145,8 @@ export class MonetizationService {
         const cached = await this.redisService.getJson<FeatureFlag[]>(cacheKey);
         if (cached) return cached;
 
-        const plan = await this.getUserPlan(userId);
-        const features = PLAN_FEATURES[plan] || [];
+        const effectivePlan = await this.getEffectivePlan(userId);
+        const features = effectivePlan?.features || DEFAULT_FREE_FEATURES;
 
         await this.redisService.setJson(cacheKey, features, 3600);
         return features;
@@ -183,13 +160,22 @@ export class MonetizationService {
     // ─── DAILY LIMITS ───────────────────────────────────────
 
     async getDailyLimits(userId: string): Promise<{ likes: number; superLikes: number; complimentCredits: number }> {
-        const plan = await this.getUserPlan(userId);
-        return DAILY_LIMITS[plan] || DAILY_LIMITS[SubscriptionPlan.FREE];
+        const plan = await this.getEffectivePlan(userId);
+        if (!plan) return DEFAULT_FREE_LIMITS;
+        return {
+            likes: plan.dailyLikesLimit,
+            superLikes: plan.dailySuperLikesLimit,
+            complimentCredits: plan.dailyComplimentsLimit,
+        };
     }
 
     async getMonthlyLimits(userId: string): Promise<{ rewinds: number; weeklyBoosts: number }> {
-        const plan = await this.getUserPlan(userId);
-        return MONTHLY_LIMITS[plan] || MONTHLY_LIMITS[SubscriptionPlan.FREE];
+        const plan = await this.getEffectivePlan(userId);
+        if (!plan) return DEFAULT_FREE_MONTHLY_LIMITS;
+        return {
+            rewinds: plan.monthlyRewindsLimit,
+            weeklyBoosts: plan.weeklyBoostsLimit,
+        };
     }
 
     async getRemainingLikes(userId: string): Promise<{ remaining: number; limit: number; isUnlimited: boolean }> {

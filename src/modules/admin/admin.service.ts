@@ -6,7 +6,7 @@ import { User, UserRole, UserStatus } from '../../database/entities/user.entity'
 import { Report, ReportStatus } from '../../database/entities/report.entity';
 import { Profile } from '../../database/entities/profile.entity';
 import { Match } from '../../database/entities/match.entity';
-import { Subscription, SubscriptionPlan } from '../../database/entities/subscription.entity';
+import { Subscription, SubscriptionPlan, SubscriptionStatus } from '../../database/entities/subscription.entity';
 import { Photo, PhotoModerationStatus } from '../../database/entities/photo.entity';
 import { Like, LikeType } from '../../database/entities/like.entity';
 import { Message } from '../../database/entities/message.entity';
@@ -16,6 +16,7 @@ import { Conversation } from '../../database/entities/conversation.entity';
 import { SupportTicket, TicketStatus } from '../../database/entities/support-ticket.entity';
 import { Ad } from '../../database/entities/ad.entity';
 import { BlockedUser } from '../../database/entities/blocked-user.entity';
+import { Plan } from '../../database/entities/plan.entity';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
 @Injectable()
@@ -51,6 +52,8 @@ export class AdminService implements OnModuleInit {
         private readonly adRepository: Repository<Ad>,
         @InjectRepository(BlockedUser)
         private readonly blockedUserRepository: Repository<BlockedUser>,
+        @InjectRepository(Plan)
+        private readonly planRepository: Repository<Plan>,
     ) { }
 
     // ─── AUTO-SEED ADMIN ON STARTUP ──────────────────────────
@@ -428,6 +431,58 @@ export class AdminService implements OnModuleInit {
             take: pagination.limit,
         });
         return { boosts, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    // ─── PLAN MANAGEMENT ──────────────────────────────────────
+
+    async getPlans() {
+        return this.planRepository.find({ order: { createdAt: 'ASC' } });
+    }
+
+    async createPlan(dto: Partial<Plan>) {
+        const plan = this.planRepository.create(dto);
+        return this.planRepository.save(plan);
+    }
+
+    async updatePlan(id: string, dto: Partial<Plan>) {
+        const plan = await this.planRepository.findOne({ where: { id } });
+        if (!plan) throw new NotFoundException('Plan not found');
+        Object.assign(plan, dto);
+        return this.planRepository.save(plan);
+    }
+
+    async deletePlan(id: string) {
+        const res = await this.planRepository.delete(id);
+        if (res.affected === 0) throw new NotFoundException('Plan not found');
+    }
+
+    async overrideUserSubscription(userId: string, planId: string, durationDays: number) {
+        const user = await this.userRepository.findOne({ where: { id: userId } });
+        if (!user) throw new NotFoundException('User not found');
+        
+        const planEntity = await this.planRepository.findOne({ where: { id: planId } });
+        if (!planEntity) throw new NotFoundException('Plan not found');
+
+        // Cancel existing
+        await this.subscriptionRepository.update(
+            { userId, status: SubscriptionStatus.ACTIVE },
+            { status: SubscriptionStatus.CANCELLED },
+        );
+
+        const startDate = new Date();
+        const endDate = new Date(startDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+        const sub = this.subscriptionRepository.create({
+            userId,
+            planId: planEntity.id,
+            planEntity,
+            status: SubscriptionStatus.ACTIVE,
+            startDate,
+            endDate,
+            paymentReference: 'ADMIN_OVERRIDE',
+        });
+
+        return this.subscriptionRepository.save(sub);
     }
 
     // ─── SUBSCRIPTIONS OVERVIEW ───────────────────────────────

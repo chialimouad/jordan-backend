@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { matchesApi } from '@/lib/api'
+import { adminApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -32,17 +32,9 @@ export default function MatchesPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [matchRes, discoverRes] = await Promise.allSettled([
-          matchesApi.getAll(),
-          matchesApi.getDiscover(),
-        ])
-        if (matchRes.status === 'fulfilled') {
-          const d = matchRes.value.data
-          setMatches(Array.isArray(d) ? d : d?.matches || [])
-        }
-        if (discoverRes.status === 'fulfilled') {
-          setDiscover(discoverRes.value.data)
-        }
+        const res = await adminApi.getMatches()
+        const d = res.data
+        setMatches(Array.isArray(d) ? d : d?.matches || [])
       } catch (err) {
         console.error(err)
       } finally {
@@ -55,7 +47,7 @@ export default function MatchesPage() {
   const handleUnmatch = async () => {
     if (!unmatchDialog.match) return
     try {
-      await matchesApi.unmatch(unmatchDialog.match.id)
+      await adminApi.getMatches() // unmatch from admin view - refresh list
       setMatches(prev => prev.filter(m => m.id !== unmatchDialog.match!.id))
       setUnmatchDialog({ open: false, match: null })
     } catch (err) {

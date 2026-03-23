@@ -24,6 +24,12 @@ export class MonetizationController {
         return this.monetizationService.getUserSubscriptionStatus(userId);
     }
 
+    @Get('plans')
+    @ApiOperation({ summary: 'Get all active subscription plans' })
+    async getActivePlans() {
+        return this.monetizationService.getActivePlans();
+    }
+
     @Get('features')
     @ApiOperation({ summary: 'Get available features for current plan' })
     async getFeatures(@CurrentUser('sub') userId: string) {
@@ -41,7 +47,7 @@ export class MonetizationController {
     @ApiOperation({ summary: 'Purchase a subscription plan' })
     async subscribe(
         @CurrentUser('sub') userId: string,
-        @Body() body: { plan: SubscriptionPlan; durationDays: number; paymentReference: string },
+        @Body() body: { plan: string; durationDays: number; paymentReference: string },
     ) {
         return this.monetizationService.purchaseSubscription(
             userId,

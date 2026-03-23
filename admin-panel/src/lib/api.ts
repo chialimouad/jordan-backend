@@ -154,6 +154,14 @@ export const adminApi = {
   // Subscriptions
   getSubscriptions: (page = 1, limit = 20, plan?: string) =>
     api.get('/admin/subscriptions', { params: { page, limit, plan } }),
+
+  // Plans
+  getPlans: () => api.get('/admin/plans'),
+  createPlan: (data: Record<string, any>) => api.post('/admin/plans', data),
+  updatePlan: (id: string, data: Record<string, any>) => api.put(`/admin/plans/${id}`, data),
+  deletePlan: (id: string) => api.delete(`/admin/plans/${id}`),
+  overrideSubscription: (userId: string, data: { planId: string, durationDays: number }) =>
+    api.post(`/admin/users/${userId}/subscription/override`, data),
 }
 
 // ── Analytics ────────────────────────────────────────────────

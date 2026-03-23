@@ -5,11 +5,12 @@ import { MonetizationController } from './monetization.controller';
 import { User } from '../../database/entities/user.entity';
 import { Subscription } from '../../database/entities/subscription.entity';
 import { Boost } from '../../database/entities/boost.entity';
+import { Plan } from '../../database/entities/plan.entity';
 import { RedisModule } from '../redis/redis.module';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([User, Subscription, Boost]),
+        TypeOrmModule.forFeature([User, Subscription, Boost, Plan]),
         RedisModule,
     ],
     controllers: [MonetizationController],

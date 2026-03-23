@@ -1,7 +1,7 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { searchApi } from '@/lib/api'
+import { adminApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,40 +19,52 @@ import { Loader2, Search, Eye, MapPin } from 'lucide-react'
 export default function SearchUsersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [results, setResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
 
-  // Filters
-  const [gender, setGender] = useState<string>('all')
-  const [minAge, setMinAge] = useState('')
-  const [maxAge, setMaxAge] = useState('')
-  const [city, setCity] = useState('')
-  const [country, setCountry] = useState('')
-  const [ethnicity, setEthnicity] = useState('')
-  const [religiousLevel, setReligiousLevel] = useState('')
+  // Search query (from header search bar or manual input)
+  const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || '')
 
-  const handleSearch = async () => {
+  // Filters
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [roleFilter, setRoleFilter] = useState<string>('all')
+  const [page, setPage] = useState(1)
+
+  // Auto-search when navigated from header search bar with ?q=
+  useEffect(() => {
+    const q = searchParams.get('q')
+    if (q) {
+      setSearchQuery(q)
+      performSearch(q, statusFilter, roleFilter)
+    }
+  }, [searchParams.get('q')])
+
+  const performSearch = async (query?: string, status?: string, role?: string) => {
     setLoading(true)
     try {
-      const params: Record<string, any> = {}
-      if (gender !== 'all') params.gender = gender
-      if (minAge) params.minAge = parseInt(minAge)
-      if (maxAge) params.maxAge = parseInt(maxAge)
-      if (city.trim()) params.city = city.trim()
-      if (country.trim()) params.country = country.trim()
-      if (ethnicity.trim()) params.ethnicity = ethnicity.trim()
-      if (religiousLevel.trim()) params.religiousLevel = religiousLevel.trim()
-
-      const { data } = await searchApi.search(params)
-      const list = Array.isArray(data) ? data : data?.profiles || data?.users || data?.results || []
+      const { data } = await adminApi.getUsers(
+        page,
+        20,
+        status !== 'all' ? status : undefined,
+        query?.trim() || undefined,
+        role !== 'all' ? role : undefined,
+      )
+      const list = Array.isArray(data) ? data : data?.users || []
       setResults(list)
       setTotal(data?.total ?? list.length)
     } catch (err) {
       console.error(err)
+      setResults([])
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleSearch = () => {
+    setPage(1)
+    performSearch(searchQuery, statusFilter, roleFilter)
   }
 
   return (
@@ -71,42 +83,29 @@ export default function SearchUsersPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="lg:col-span-2">
+              <label className="text-xs font-medium text-muted-foreground">Name or Email</label>
+              <Input
+                placeholder="Search by name, email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              />
+            </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.gender')}</label>
-              <Select value={gender} onValueChange={setGender}>
+              <label className="text-xs font-medium text-muted-foreground">{t('users.status')}</label>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">{t('common.all')}</SelectItem>
-                  <SelectItem value="male">{t('searchUsers.male')}</SelectItem>
-                  <SelectItem value="female">{t('searchUsers.female')}</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="suspended">Suspended</SelectItem>
+                  <SelectItem value="pending_verification">Pending</SelectItem>
+                  <SelectItem value="deactivated">Deactivated</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.minAge')}</label>
-              <Input type="number" placeholder="18" value={minAge} onChange={(e) => setMinAge(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.maxAge')}</label>
-              <Input type="number" placeholder="60" value={maxAge} onChange={(e) => setMaxAge(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.city')}</label>
-              <Input placeholder="Any city" value={city} onChange={(e) => setCity(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.country')}</label>
-              <Input placeholder="Any country" value={country} onChange={(e) => setCountry(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.ethnicity')}</label>
-              <Input placeholder="Any" value={ethnicity} onChange={(e) => setEthnicity(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">{t('searchUsers.religiousLevel')}</label>
-              <Input placeholder="Any" value={religiousLevel} onChange={(e) => setReligiousLevel(e.target.value)} />
             </div>
             <div className="flex items-end">
               <Button onClick={handleSearch} disabled={loading} className="w-full gap-2">
@@ -136,22 +135,23 @@ export default function SearchUsersPage() {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {results.map((user: any, i: number) => (
                 <div
-                  key={user.id || user.userId || i}
+                  key={user.id || i}
                   className="flex items-start gap-3 rounded-lg border p-4 hover:bg-muted/50 transition-colors cursor-pointer"
-                  onClick={() => navigate(`/users/${user.id || user.userId}`)}
+                  onClick={() => navigate(`/users/${user.id}`)}
                 >
                   <Avatar className="h-12 w-12">
                     <AvatarFallback className="bg-primary/10 text-primary">
-                      {(user.firstName || user.profile?.bio)?.[0] || '?'}
+                      {user.firstName?.[0] || '?'}{user.lastName?.[0] || ''}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-medium truncate">
-                        {user.firstName ? `${user.firstName} ${user.lastName || ''}` : `User ${(user.id || '').slice(0, 8)}`}
+                        {user.firstName ? `${user.firstName} ${user.lastName || ''}` : user.email || `User ${(user.id || '').slice(0, 8)}`}
                       </p>
                       {user.selfieVerified && <Badge variant="info" className="text-[10px]">Verified</Badge>}
                     </div>
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">{user.email}</p>
                     <div className="flex items-center gap-1 text-xs text-muted-foreground mt-1">
                       {(user.profile?.city || user.city) && (
                         <>
@@ -161,12 +161,11 @@ export default function SearchUsersPage() {
                       )}
                     </div>
                     <div className="flex gap-1 mt-2 flex-wrap">
-                      {user.profile?.gender && <Badge variant="secondary" className="text-[10px] capitalize">{user.profile.gender}</Badge>}
-                      {user.profile?.ethnicity && <Badge variant="outline" className="text-[10px]">{user.profile.ethnicity}</Badge>}
-                      {user.profile?.religiousLevel && <Badge variant="outline" className="text-[10px]">{user.profile.religiousLevel}</Badge>}
+                      <Badge variant={user.status === 'active' ? 'success' : user.status === 'suspended' ? 'destructive' : 'secondary'} className="text-[10px] capitalize">{user.status}</Badge>
+                      {user.role && user.role !== 'user' && <Badge variant="info" className="text-[10px] capitalize">{user.role}</Badge>}
                     </div>
                   </div>
-                  <Button size="icon" variant="ghost">
+                  <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); navigate(`/users/${user.id}`) }}>
                     <Eye className="h-4 w-4" />
                   </Button>
                 </div>

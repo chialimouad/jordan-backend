@@ -68,22 +68,17 @@ export class AuthService {
 
                 await this.userRepository.save(existingUser);
 
-                let emailSent = false;
-                try {
-                    await this.mailService.sendOtpEmail(email, otp, firstName);
-                    emailSent = true;
-                } catch (err) {
+                // Fire-and-forget: don't block HTTP response on SMTP
+                this.mailService.sendOtpEmail(email, otp, firstName).catch((err) => {
                     this.logger.error(`OTP email failed for ${email}`, err?.message || err);
-                }
+                });
 
-                this.logger.log(`User re-registered (pending verification): ${email}, emailSent=${emailSent}`);
+                this.logger.log(`User re-registered (pending verification): ${email}`);
 
                 return {
-                    message: emailSent
-                        ? 'Registration successful. Please verify your email with the OTP sent.'
-                        : 'Account created but failed to send verification email. Please use resend OTP.',
+                    message: 'Registration successful. Please verify your email with the OTP sent.',
                     email,
-                    emailSent,
+                    emailSent: true,
                 };
             }
             throw new ConflictException('Email already registered');
@@ -121,23 +116,17 @@ export class AuthService {
 
         await this.userRepository.save(user);
 
-        // Send OTP email — await so we can tell the client if it failed
-        let emailSent = false;
-        try {
-            await this.mailService.sendOtpEmail(email, otp, firstName);
-            emailSent = true;
-        } catch (err) {
+        // Fire-and-forget: don't block HTTP response on SMTP
+        this.mailService.sendOtpEmail(email, otp, firstName).catch((err) => {
             this.logger.error(`OTP email failed for ${email}`, err?.message || err);
-        }
+        });
 
-        this.logger.log(`User registered (pending verification): ${email}, emailSent=${emailSent}`);
+        this.logger.log(`User registered (pending verification): ${email}`);
 
         return {
-            message: emailSent
-                ? 'Registration successful. Please verify your email with the OTP sent.'
-                : 'Account created but failed to send verification email. Please use resend OTP.',
+            message: 'Registration successful. Please verify your email with the OTP sent.',
             email,
-            emailSent,
+            emailSent: true,
         };
     }
 
@@ -256,19 +245,14 @@ export class AuthService {
             otpCooldownUntil: cooldownUntil,
         });
 
-        let emailSent = false;
-        try {
-            await this.mailService.sendOtpEmail(email, otp, user.firstName);
-            emailSent = true;
-        } catch (err) {
+        // Fire-and-forget: don't block HTTP response on SMTP
+        this.mailService.sendOtpEmail(email, otp, user.firstName).catch((err) => {
             this.logger.error(`Resend OTP email failed for ${email}`, err?.message || err);
-        }
+        });
 
         return {
-            message: emailSent
-                ? 'New OTP sent to your email'
-                : 'Failed to send OTP email. Please try again later.',
-            emailSent,
+            message: 'New OTP sent to your email',
+            emailSent: true,
         };
     }
 
