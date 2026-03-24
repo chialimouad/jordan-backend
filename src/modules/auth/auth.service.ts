@@ -43,6 +43,7 @@ export class AuthService {
 
     async register(registerDto: RegisterDto) {
         const { email, password, firstName, lastName, phone, username } = registerDto;
+        this.logger.log(`[OTP] Register request for ${email}`);
 
         const existingUser = await this.userRepository.findOne({
             where: { email },
@@ -53,6 +54,8 @@ export class AuthService {
                 const salt = await bcrypt.genSalt(12);
                 const hashedPassword = await bcrypt.hash(password, salt);
                 const otp = this.generateOtp();
+                this.logger.log(`[OTP] Generated OTP for re-register ${email}: ${otp}`);
+                const hashedOtp = await bcrypt.hash(otp, 10);
                 const otpExpiry = new Date(
                     Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
                 );
@@ -62,23 +65,27 @@ export class AuthService {
                 existingUser.lastName = lastName;
                 if (phone !== undefined) existingUser.phone = phone;
                 if (username !== undefined) existingUser.username = username;
-                existingUser.otpCode = otp;
+                existingUser.otpCode = hashedOtp;
                 existingUser.otpExpiresAt = otpExpiry;
                 existingUser.otpAttempts = 0;
 
                 await this.userRepository.save(existingUser);
+                this.logger.log(`[OTP] Hashed OTP saved for ${email}, expiry=${otpExpiry.toISOString()}`);
 
-                // Fire-and-forget: don't block HTTP response on SMTP
-                this.mailService.sendOtpEmail(email, otp, firstName).catch((err) => {
-                    this.logger.error(`OTP email failed for ${email}`, err?.message || err);
-                });
-
-                this.logger.log(`User re-registered (pending verification): ${email}`);
+                // Await email send so errors propagate
+                let emailSent = false;
+                try {
+                    await this.mailService.sendOtpEmail(email, otp, firstName);
+                    emailSent = true;
+                    this.logger.log(`[OTP] ✅ Email sent successfully for ${email}`);
+                } catch (err) {
+                    this.logger.error(`[OTP] ❌ Email FAILED for ${email}: ${err?.message || err}`);
+                }
 
                 return {
                     message: 'Registration successful. Please verify your email with the OTP sent.',
                     email,
-                    emailSent: true,
+                    emailSent,
                 };
             }
             throw new ConflictException('Email already registered');
@@ -97,6 +104,8 @@ export class AuthService {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const otp = this.generateOtp();
+        this.logger.log(`[OTP] Generated OTP for new user ${email}: ${otp}`);
+        const hashedOtp = await bcrypt.hash(otp, 10);
         const otpExpiry = new Date(
             Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
         );
@@ -109,34 +118,40 @@ export class AuthService {
             phone,
             username,
             status: UserStatus.PENDING_VERIFICATION,
-            otpCode: otp,
+            otpCode: hashedOtp,
             otpExpiresAt: otpExpiry,
             otpAttempts: 0,
         });
 
         await this.userRepository.save(user);
+        this.logger.log(`[OTP] User created & hashed OTP saved for ${email}, expiry=${otpExpiry.toISOString()}`);
 
-        // Fire-and-forget: don't block HTTP response on SMTP
-        this.mailService.sendOtpEmail(email, otp, firstName).catch((err) => {
-            this.logger.error(`OTP email failed for ${email}`, err?.message || err);
-        });
-
-        this.logger.log(`User registered (pending verification): ${email}`);
+        // Await email send so errors propagate
+        let emailSent = false;
+        try {
+            await this.mailService.sendOtpEmail(email, otp, firstName);
+            emailSent = true;
+            this.logger.log(`[OTP] ✅ Email sent successfully for ${email}`);
+        } catch (err) {
+            this.logger.error(`[OTP] ❌ Email FAILED for ${email}: ${err?.message || err}`);
+        }
 
         return {
             message: 'Registration successful. Please verify your email with the OTP sent.',
             email,
-            emailSent: true,
+            emailSent,
         };
     }
 
     async verifyOtp(dto: VerifyOtpDto) {
         const { email, otp } = dto;
+        this.logger.log(`[OTP] Verify request for ${email}, code=${otp}`);
 
         // Anti-bruteforce: rate limit OTP verifications
         const rateLimitKey = `otp_verify:${email}`;
         const allowed = await this.redisService.checkRateLimit(rateLimitKey, 10, 300);
         if (!allowed) {
+            this.logger.warn(`[OTP] Rate limited: ${email}`);
             throw new HttpException('Too many OTP verification attempts. Try again later.', HttpStatus.TOO_MANY_REQUESTS);
         }
 
@@ -144,13 +159,16 @@ export class AuthService {
             where: { email },
             select: [
                 'id', 'email', 'firstName', 'lastName', 'role', 'status',
-                'otpCode', 'otpExpiresAt', 'otpAttempts',
+                'otpCode', 'otpExpiresAt', 'otpAttempts', 'emailVerified',
             ],
         });
 
         if (!user) {
+            this.logger.warn(`[OTP] User not found: ${email}`);
             throw new BadRequestException('User not found');
         }
+
+        this.logger.log(`[OTP] User found: ${email}, status=${user.status}, emailVerified=${user.emailVerified}, hasOtp=${!!user.otpCode}, otpExpiry=${user.otpExpiresAt}, attempts=${user.otpAttempts}`);
 
         if (user.status === UserStatus.ACTIVE && user.emailVerified) {
             throw new BadRequestException('Email already verified');
@@ -159,19 +177,25 @@ export class AuthService {
         // Check max attempts
         const maxAttempts = this.configService.get<number>('otp.maxAttempts', 5);
         if (user.otpAttempts >= maxAttempts) {
+            this.logger.warn(`[OTP] Max attempts exceeded for ${email}: ${user.otpAttempts}/${maxAttempts}`);
             throw new HttpException('Maximum OTP attempts exceeded. Request a new OTP.', HttpStatus.TOO_MANY_REQUESTS);
         }
 
         // Check OTP expiry
         if (!user.otpCode || !user.otpExpiresAt || new Date() > user.otpExpiresAt) {
+            this.logger.warn(`[OTP] Expired for ${email}: otpExpiresAt=${user.otpExpiresAt}, now=${new Date().toISOString()}`);
             throw new BadRequestException('OTP has expired. Request a new one.');
         }
 
-        // Verify OTP
-        if (user.otpCode !== otp) {
+        // Verify OTP using bcrypt compare (OTP is hashed in DB)
+        const isMatch = await bcrypt.compare(otp, user.otpCode);
+        this.logger.log(`[OTP] bcrypt.compare result for ${email}: ${isMatch}`);
+
+        if (!isMatch) {
             await this.userRepository.update(user.id, {
                 otpAttempts: user.otpAttempts + 1,
             });
+            this.logger.warn(`[OTP] Invalid code for ${email}. Attempts: ${user.otpAttempts + 1}/${maxAttempts}`);
             throw new BadRequestException('Invalid OTP code');
         }
 
@@ -179,8 +203,8 @@ export class AuthService {
         await this.userRepository.update(user.id, {
             emailVerified: true,
             status: UserStatus.ACTIVE,
-            otpCode: undefined,
-            otpExpiresAt: undefined,
+            otpCode: null as any,
+            otpExpiresAt: null as any,
             otpAttempts: 0,
         });
 
@@ -189,7 +213,7 @@ export class AuthService {
         const tokens = await this.generateTokens(user);
         await this.updateRefreshToken(user.id, tokens.refreshToken);
 
-        this.logger.log(`Email verified: ${email}`);
+        this.logger.log(`[OTP] ✅ Email verified successfully: ${email}`);
 
         return {
             message: 'Email verified successfully',
@@ -200,6 +224,7 @@ export class AuthService {
 
     async resendOtp(dto: ResendOtpDto) {
         const { email } = dto;
+        this.logger.log(`[OTP] Resend request for ${email}`);
 
         // Anti-bruteforce: rate limit resend
         const rateLimitKey = `otp_resend:${email}`;
@@ -233,26 +258,34 @@ export class AuthService {
         }
 
         const otp = this.generateOtp();
+        this.logger.log(`[OTP] Generated new OTP for resend ${email}: ${otp}`);
+        const hashedOtp = await bcrypt.hash(otp, 10);
         const otpExpiry = new Date(
             Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
         );
         const cooldownUntil = new Date(Date.now() + cooldownSeconds * 1000);
 
         await this.userRepository.update(user.id, {
-            otpCode: otp,
+            otpCode: hashedOtp,
             otpExpiresAt: otpExpiry,
             otpAttempts: 0,
             otpCooldownUntil: cooldownUntil,
         });
+        this.logger.log(`[OTP] Hashed OTP saved for resend ${email}, expiry=${otpExpiry.toISOString()}`);
 
-        // Fire-and-forget: don't block HTTP response on SMTP
-        this.mailService.sendOtpEmail(email, otp, user.firstName).catch((err) => {
-            this.logger.error(`Resend OTP email failed for ${email}`, err?.message || err);
-        });
+        // Await email send
+        let emailSent = false;
+        try {
+            await this.mailService.sendOtpEmail(email, otp, user.firstName);
+            emailSent = true;
+            this.logger.log(`[OTP] ✅ Resend email sent to ${email}`);
+        } catch (err) {
+            this.logger.error(`[OTP] ❌ Resend email FAILED for ${email}: ${err?.message || err}`);
+        }
 
         return {
             message: 'New OTP sent to your email',
-            emailSent: true,
+            emailSent,
         };
     }
 
@@ -361,6 +394,7 @@ export class AuthService {
 
     async forgotPassword(dto: ForgotPasswordDto) {
         const { email } = dto;
+        this.logger.log(`[OTP] Forgot password request for ${email}`);
 
         // Rate limit
         const rateLimitKey = `forgot_pwd:${email}`;
@@ -376,29 +410,37 @@ export class AuthService {
 
         // Always return success to prevent email enumeration
         if (!user) {
+            this.logger.warn(`[OTP] Forgot password — email not found: ${email}`);
             return { message: 'If this email exists, a reset code has been sent' };
         }
 
         const otp = this.generateOtp();
+        this.logger.log(`[OTP] Generated reset OTP for ${email}: ${otp}`);
+        const hashedOtp = await bcrypt.hash(otp, 10);
         const otpExpiry = new Date(
             Date.now() + this.configService.get<number>('otp.expirySeconds', 300) * 1000,
         );
 
         await this.userRepository.update(user.id, {
-            resetOtpCode: otp,
+            resetOtpCode: hashedOtp,
             resetOtpExpiresAt: otpExpiry,
             resetOtpAttempts: 0,
         });
+        this.logger.log(`[OTP] Hashed reset OTP saved for ${email}, expiry=${otpExpiry.toISOString()}`);
 
-        this.mailService
-            .sendPasswordResetOtp(email, otp, user.firstName)
-            .catch((err) => this.logger.error(`Reset OTP email failed for ${email}`, err));
+        try {
+            await this.mailService.sendPasswordResetOtp(email, otp, user.firstName);
+            this.logger.log(`[OTP] ✅ Reset email sent to ${email}`);
+        } catch (err) {
+            this.logger.error(`[OTP] ❌ Reset email FAILED for ${email}: ${err?.message || err}`);
+        }
 
         return { message: 'If this email exists, a reset code has been sent' };
     }
 
     async verifyResetOtp(dto: VerifyResetOtpDto) {
         const { email, otp } = dto;
+        this.logger.log(`[OTP] Verify reset OTP for ${email}`);
 
         const rateLimitKey = `reset_verify:${email}`;
         const allowed = await this.redisService.checkRateLimit(rateLimitKey, 10, 300);
@@ -417,25 +459,32 @@ export class AuthService {
 
         const maxAttempts = this.configService.get<number>('otp.maxAttempts', 5);
         if (user.resetOtpAttempts >= maxAttempts) {
+            this.logger.warn(`[OTP] Reset max attempts exceeded for ${email}`);
             throw new HttpException('Maximum attempts exceeded. Request a new code.', HttpStatus.TOO_MANY_REQUESTS);
         }
 
         if (!user.resetOtpCode || !user.resetOtpExpiresAt || new Date() > user.resetOtpExpiresAt) {
+            this.logger.warn(`[OTP] Reset OTP expired for ${email}`);
             throw new BadRequestException('Reset code has expired');
         }
 
-        if (user.resetOtpCode !== otp) {
+        const isMatch = await bcrypt.compare(otp, user.resetOtpCode);
+        this.logger.log(`[OTP] Reset bcrypt.compare for ${email}: ${isMatch}`);
+
+        if (!isMatch) {
             await this.userRepository.update(user.id, {
                 resetOtpAttempts: user.resetOtpAttempts + 1,
             });
             throw new BadRequestException('Invalid reset code');
         }
 
+        this.logger.log(`[OTP] ✅ Reset OTP verified for ${email}`);
         return { message: 'OTP verified. You may now reset your password.', verified: true };
     }
 
     async resetPassword(dto: ResetPasswordDto) {
         const { email, otp, newPassword } = dto;
+        this.logger.log(`[OTP] Reset password request for ${email}`);
 
         // Rate limit to prevent OTP brute-force via this endpoint
         const rateLimitKey = `reset_password:${email}`;
@@ -462,7 +511,8 @@ export class AuthService {
             throw new BadRequestException('Reset code has expired');
         }
 
-        if (user.resetOtpCode !== otp) {
+        const isMatch = await bcrypt.compare(otp, user.resetOtpCode);
+        if (!isMatch) {
             await this.userRepository.update(user.id, {
                 resetOtpAttempts: user.resetOtpAttempts + 1,
             });
@@ -474,13 +524,13 @@ export class AuthService {
 
         await this.userRepository.update(user.id, {
             password: hashedPassword,
-            resetOtpCode: undefined,
-            resetOtpExpiresAt: undefined,
+            resetOtpCode: null as any,
+            resetOtpExpiresAt: null as any,
             resetOtpAttempts: 0,
-            refreshToken: undefined,
+            refreshToken: null as any,
         });
 
-        this.logger.log(`Password reset for: ${email}`);
+        this.logger.log(`[OTP] ✅ Password reset completed for: ${email}`);
 
         return { message: 'Password reset successfully. Please login with your new password.' };
     }
