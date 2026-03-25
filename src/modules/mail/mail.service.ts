@@ -23,14 +23,15 @@ export class MailService {
         }
 
         this.transporter = nodemailer.createTransport({
-            host: host || 'smtp.gmail.com',
-            port: port || 587,
-            secure: (port || 587) === 465,
+            service: 'gmail',
             auth: { user, pass },
             // Connection timeout settings
-            connectionTimeout: 5000,
-            greetingTimeout: 5000,
-            socketTimeout: 5000,
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 10000,
+            tls: {
+                rejectUnauthorized: false
+            }
         });
 
         // Verify SMTP connection on startup
