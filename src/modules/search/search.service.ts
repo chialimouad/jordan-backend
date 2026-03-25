@@ -85,7 +85,7 @@ export class SearchService {
             });
         }
 
-        // Age filter
+        // Age filter — include users with NULL dateOfBirth (incomplete profiles)
         if (filters.minAge || filters.maxAge) {
             const now = new Date();
             if (filters.maxAge) {
@@ -94,7 +94,7 @@ export class SearchService {
                     now.getMonth(),
                     now.getDate(),
                 );
-                query.andWhere('profile.dateOfBirth >= :minDate', { minDate });
+                query.andWhere('(profile.dateOfBirth IS NULL OR profile.dateOfBirth >= :minDate)', { minDate });
             }
             if (filters.minAge) {
                 const maxDate = new Date(
@@ -102,7 +102,7 @@ export class SearchService {
                     now.getMonth(),
                     now.getDate(),
                 );
-                query.andWhere('profile.dateOfBirth <= :maxDate', { maxDate });
+                query.andWhere('(profile.dateOfBirth IS NULL OR profile.dateOfBirth <= :maxDate)', { maxDate });
             }
         }
 

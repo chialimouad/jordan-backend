@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { SearchService } from './search.service';
@@ -11,6 +11,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 @UseGuards(JwtAuthGuard)
 @Controller('search')
 export class SearchController {
+    private readonly logger = new Logger(SearchController.name);
+
     constructor(private readonly searchService: SearchService) { }
 
     @Get()
@@ -20,6 +22,14 @@ export class SearchController {
         @CurrentUser('sub') userId: string,
         @Query() filters: SearchFiltersDto,
     ) {
-        return this.searchService.search(userId, filters);
+        try {
+            this.logger.log(`[Search] userId=${userId}, filters=${JSON.stringify(filters)}`);
+            const result = await this.searchService.search(userId, filters);
+            this.logger.log(`[Search] returned ${result?.users?.length ?? 0} users for userId=${userId}`);
+            return result;
+        } catch (error) {
+            this.logger.error(`[Search] FAILED for userId=${userId}: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Search failed. Please try again.');
+        }
     }
 }
