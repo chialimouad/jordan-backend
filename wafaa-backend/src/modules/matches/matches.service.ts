@@ -138,8 +138,7 @@ export class MatchesService {
             .createQueryBuilder('profile')
             .leftJoinAndSelect('profile.user', 'user')
             .where('profile.userId NOT IN (:...excludeIds)', { excludeIds })
-            .andWhere('user.status = :status', { status: 'active' })
-            .andWhere('profile.isComplete = :complete', { complete: true });
+            .andWhere('user.status = :status', { status: 'active' });
 
         // Apply preference filters
         if (preferences) {

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Profile } from '../../database/entities/profile.entity';
@@ -9,6 +9,8 @@ import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class SearchService {
+    private readonly logger = new Logger(SearchService.name);
+
     constructor(
         @InjectRepository(Profile)
         private readonly profileRepository: Repository<Profile>,
@@ -20,10 +22,15 @@ export class SearchService {
     ) { }
 
     async search(userId: string, filters: SearchFiltersDto) {
+        this.logger.log(`[SEARCH] userId=${userId} filters=${JSON.stringify(filters)}`);
+
         // Check cache
         const cacheKey = `search:${userId}:${JSON.stringify(filters)}`;
         const cached = await this.redisService.getJson<any>(cacheKey);
-        if (cached) return cached;
+        if (cached) {
+            this.logger.log(`[SEARCH] Cache hit — returning cached results`);
+            return cached;
+        }
 
         // Get blocked users
         const blockedUsers = await this.blockedUserRepository.find({
@@ -34,13 +41,12 @@ export class SearchService {
         );
         const excludeIds = [userId, ...blockedIds];
 
-        // Build query
+        // Build query — do NOT filter by isComplete (new profiles won't have it)
         const query = this.profileRepository
             .createQueryBuilder('profile')
             .leftJoinAndSelect('profile.user', 'user')
             .where('profile.userId NOT IN (:...excludeIds)', { excludeIds })
-            .andWhere('user.status = :status', { status: 'active' })
-            .andWhere('profile.isComplete = :complete', { complete: true });
+            .andWhere('user.status = :status', { status: 'active' });
 
         // Apply filters
         if (filters.gender) {
