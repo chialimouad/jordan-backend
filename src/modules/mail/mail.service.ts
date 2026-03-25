@@ -28,9 +28,9 @@ export class MailService {
             secure: (port || 587) === 465,
             auth: { user, pass },
             // Connection timeout settings
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000,
+            connectionTimeout: 5000,
+            greetingTimeout: 5000,
+            socketTimeout: 5000,
         });
 
         // Verify SMTP connection on startup
@@ -41,8 +41,8 @@ export class MailService {
             })
             .catch((err) => {
                 this.smtpReady = false;
-                this.logger.error(`❌ [SMTP] Connection FAILED: ${err?.message || err}`);
-                this.logger.error(`❌ [SMTP] Check MAIL_HOST, MAIL_PORT, MAIL_USER, MAIL_PASS env vars`);
+                this.logger.warn(`⚠️ [SMTP] Connection FAILED: ${err?.message || err}`);
+                this.logger.warn(`⚠️ [SMTP] OTP emails will be disabled. Check MAIL_HOST/PORT/USER/PASS if you need Mail.`);
             });
     }
 
