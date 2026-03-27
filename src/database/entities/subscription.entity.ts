@@ -61,6 +61,10 @@ export class Subscription {
     @Column({ nullable: true })
     paymentReference: string;
 
+    // Stripe Subscription ID
+    @Column({ nullable: true })
+    stripeSubscriptionId: string;
+
     @CreateDateColumn()
     createdAt: Date;
 

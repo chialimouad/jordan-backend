@@ -9,6 +9,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { User } from '../../database/entities/user.entity';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { UsersModule } from '../users/users.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
     imports: [
@@ -26,6 +27,7 @@ import { UsersModule } from '../users/users.module';
         }),
         SubscriptionsModule,
         UsersModule,
+        PaymentsModule,
     ],
     controllers: [AuthController],
     providers: [AuthService, JwtStrategy],

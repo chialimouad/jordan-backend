@@ -27,6 +27,7 @@ import { RedisService } from '../redis/redis.service';
 import { MailService } from '../mail/mail.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { UsersService } from '../users/users.service';
+import { PaymentsService } from '../payments/payments.service';
 
 @Injectable()
 export class AuthService {
@@ -41,6 +42,7 @@ export class AuthService {
         private readonly mailService: MailService,
         private readonly subscriptionsService: SubscriptionsService,
         private readonly usersService: UsersService,
+        private readonly paymentsService: PaymentsService,
     ) { }
 
     // ─── REGISTRATION WITH OTP ──────────────────────────────
@@ -229,7 +231,18 @@ export class AuthService {
             await this.subscriptionsService.createTrialSubscription(user.id, 3);
             this.logger.log(`[OTP] 🎁 Trial subscription granted to ${email}`);
         } catch (trialErr) {
-            this.logger.error(`[OTP] ❌ Failed to grant trial to ${email}: ${trialErr.message}`);
+            this.logger.error(`[OTP] ❌ Failed to grant trial to ${email}: ${(trialErr as Error).message}`);
+        }
+
+        // Stripe Customer Creation
+        try {
+            const stripeCustomerId = await this.paymentsService.createCustomer(user.email, `${user.firstName} ${user.lastName}`);
+            if (stripeCustomerId) {
+                await this.userRepository.update(user.id, { stripeCustomerId });
+                this.logger.log(`[Stripe] ✅ Created Stripe customer for ${email}`);
+            }
+        } catch (stripeErr) {
+            this.logger.error(`[Stripe] ❌ Failed to create customer for ${email}: ${(stripeErr as Error).message}`);
         }
 
         // Generate tokens
@@ -689,6 +702,10 @@ export class AuthService {
         }
 
         return { email, otp: user.otpCode, expiresAt: user.otpExpiresAt };
+    }
+
+    async checkUsernameAvailable(username: string): Promise<boolean> {
+        return this.usersService.isUsernameAvailable(username);
     }
 
     // ─── PRIVATE HELPERS ────────────────────────────────────

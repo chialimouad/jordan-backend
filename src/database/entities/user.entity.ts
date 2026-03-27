@@ -176,6 +176,10 @@ export class User {
     @Column({ nullable: true })
     lastLoginAt: Date;
 
+    // Stripe Customer ID
+    @Column({ nullable: true, select: false })
+    stripeCustomerId: string;
+
     @CreateDateColumn()
     createdAt: Date;
 

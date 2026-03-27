@@ -1,0 +1,22 @@
+# Methna App Database Backup Cron Configuration
+# Install with: crontab methna_backup_cron
+# Or add to existing crontab with: crontab -e
+
+# Environment variables (adjust as needed)
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password_here
+DB_NAME=methna_prod
+
+# Daily backup at 2:00 AM (production)
+0 2 * * * /bin/bash /path/to/jord/scripts/backup_db.sh prod >> /var/log/methna_backup.log 2>&1
+
+# Development backup every 6 hours (optional)
+0 */6 * * * /bin/bash /path/to/jord/scripts/backup_db.sh dev >> /var/log/methna_backup.log 2>&1
+
+# Weekly backup verification (every Sunday at 3:00 AM)
+0 3 * * 0 /bin/bash /path/to/jord/scripts/verify_backups.sh >> /var/log/methna_backup.log 2>&1
+
+# Monthly backup cleanup (1st of each month at 4:00 AM)
+0 4 1 * * /bin/bash /path/to/jord/scripts/cleanup_old_backups.sh >> /var/log/methna_backup.log 2>&1

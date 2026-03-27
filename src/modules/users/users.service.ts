@@ -133,4 +133,11 @@ export class UsersService {
         });
         return { users, total, page, limit };
     }
+
+    async isUsernameAvailable(username: string): Promise<boolean> {
+        const count = await this.userRepository.count({
+            where: { username },
+        });
+        return count === 0;
+    }
 }

@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Subscription, SubscriptionPlan, SubscriptionStatus } from '../../database/entities/subscription.entity';
 import { User } from '../../database/entities/user.entity';
+import Stripe from 'stripe';
 
 export enum PaymentProvider {
     STRIPE = 'stripe',
@@ -29,6 +30,8 @@ export interface PaymentResult {
     paymentId?: string;
     clientSecret?: string;
     error?: string;
+    customerId?: string;
+    ephemeralKey?: string;
 }
 
 @Injectable()
@@ -41,13 +44,33 @@ export class PaymentsService {
         [SubscriptionPlan.GOLD]: 2999,    // $29.99 in cents
     };
 
+    private stripe: Stripe;
+
     constructor(
         private readonly configService: ConfigService,
         @InjectRepository(Subscription)
         private readonly subscriptionRepository: Repository<Subscription>,
         @InjectRepository(User)
         private readonly userRepository: Repository<User>,
-    ) { }
+    ) {
+        const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+        if (stripeKey) {
+            this.stripe = new Stripe(stripeKey, { apiVersion: '2023-10-16' as any });
+        }
+    }
+
+    // ─── CUSTOMER MANAGEMENT ─────────────────────────────────
+
+    async createCustomer(email: string, name: string): Promise<string | null> {
+        if (!this.stripe) return null;
+        try {
+            const customer = await this.stripe.customers.create({ email, name });
+            return customer.id;
+        } catch (error) {
+            this.logger.error(`Failed to create Stripe customer: ${(error as Error).message}`);
+            return null;
+        }
+    }
 
     // ─── CREATE PAYMENT INTENT ───────────────────────────────
 
@@ -68,7 +91,18 @@ export class PaymentsService {
 
         switch (provider) {
             case PaymentProvider.STRIPE:
-                return this.createStripePaymentIntent(userId, amount, currency, plan);
+                const user = await this.userRepository.findOne({ where: { id: userId }, select: ['id', 'email', 'firstName', 'lastName', 'stripeCustomerId'] });
+                if (!user) throw new BadRequestException('User not found');
+                
+                let customerId: string | null = user.stripeCustomerId;
+                if (!customerId && this.stripe) {
+                    customerId = await this.createCustomer(user.email, `${user.firstName} ${user.lastName}`);
+                    if (customerId) await this.userRepository.update(user.id, { stripeCustomerId: customerId });
+                }
+                
+                if (!customerId) throw new BadRequestException('Failed to initialize Stripe customer');
+                
+                return this.createStripeSubscription(userId, plan, customerId as string);
             case PaymentProvider.APPLE_PAY:
                 return this.createApplePaySession(userId, amount, currency, plan);
             case PaymentProvider.GOOGLE_PAY:
@@ -80,45 +114,50 @@ export class PaymentsService {
 
     // ─── STRIPE INTEGRATION ─────────────────────────────────
 
-    private async createStripePaymentIntent(
+    async createStripeSubscription(
         userId: string,
-        amount: number,
-        currency: string,
         plan: SubscriptionPlan,
+        stripeCustomerId: string,
     ): Promise<PaymentResult> {
-        const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
-
-        if (!stripeKey) {
-            this.logger.warn('Stripe secret key not configured — returning mock payment intent');
+        if (!this.stripe) {
+            this.logger.warn('Stripe secret key not configured — returning mock payment');
             return {
                 success: true,
-                paymentId: `mock_pi_${Date.now()}`,
+                paymentId: `mock_sub_${Date.now()}`,
                 clientSecret: `mock_secret_${Date.now()}`,
             };
         }
 
         try {
-            // TODO: Replace with actual Stripe SDK call
-            // const stripe = new Stripe(stripeKey);
-            // const paymentIntent = await stripe.paymentIntents.create({
-            //     amount,
-            //     currency,
-            //     metadata: { userId, plan },
-            // });
-            // return {
-            //     success: true,
-            //     paymentId: paymentIntent.id,
-            //     clientSecret: paymentIntent.client_secret,
-            // };
+            let priceId = '';
+            if (plan === SubscriptionPlan.PREMIUM) priceId = this.configService.get<string>('STRIPE_PRICE_PREMIUM') || 'price_premium';
+            else if (plan === SubscriptionPlan.GOLD) priceId = this.configService.get<string>('STRIPE_PRICE_GOLD') || 'price_gold';
 
-            this.logger.log(`Stripe payment intent created for user ${userId}, plan: ${plan}, amount: ${amount}`);
+            const subscription = await this.stripe.subscriptions.create({
+                customer: stripeCustomerId,
+                items: [{ price: priceId }],
+                payment_behavior: 'default_incomplete',
+                payment_settings: { save_default_payment_method: 'on_subscription' },
+                expand: ['latest_invoice.payment_intent'],
+                metadata: { userId, plan },
+            });
+
+            const invoice = subscription.latest_invoice as any;
+            const paymentIntent = invoice?.payment_intent as any;
+
+            this.logger.log(`Stripe subscription created for user ${userId}, plan: ${plan}`);
             return {
                 success: true,
-                paymentId: `pi_${Date.now()}`,
-                clientSecret: `secret_${Date.now()}`,
+                paymentId: subscription.id,
+                clientSecret: paymentIntent?.client_secret || '',
+                customerId: stripeCustomerId,
+                ephemeralKey: (await this.stripe.ephemeralKeys.create(
+                    { customer: stripeCustomerId },
+                    { apiVersion: '2023-10-16' as any }
+                )).secret
             };
         } catch (error) {
-            this.logger.error('Stripe payment intent creation failed', (error as Error).message);
+            this.logger.error('Stripe subscription creation failed', (error as Error).message);
             return { success: false, error: (error as Error).message };
         }
     }
@@ -162,72 +201,116 @@ export class PaymentsService {
     async handleStripeWebhook(payload: any, signature: string): Promise<void> {
         const endpointSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
 
-        // TODO: Verify webhook signature with Stripe SDK
-        // const event = stripe.webhooks.constructEvent(payload, signature, endpointSecret);
-
-        const event = payload; // Placeholder until Stripe SDK is integrated
+        let event = payload;
+        if (this.stripe && endpointSecret) {
+            try {
+                // Verify webhook signature with Stripe SDK
+                event = this.stripe.webhooks.constructEvent(payload, signature, endpointSecret);
+            } catch (err) {
+                this.logger.error(`Webhook signature verification failed.`, (err as Error).message);
+                throw new BadRequestException('Webhook Error');
+            }
+        }
 
         switch (event.type) {
+            case 'invoice.paid':
             case 'payment_intent.succeeded':
-                await this.handlePaymentSuccess(event.data?.object);
+                await this.handlePaymentSuccess(event.data.object);
                 break;
+            case 'invoice.payment_failed':
             case 'payment_intent.payment_failed':
-                await this.handlePaymentFailure(event.data?.object);
+                await this.handlePaymentFailure(event.data.object);
                 break;
             case 'customer.subscription.deleted':
-                await this.handleSubscriptionCancelled(event.data?.object);
+            case 'customer.subscription.updated':
+                await this.handleSubscriptionUpdated(event.data.object);
                 break;
             default:
                 this.logger.log(`Unhandled Stripe event: ${event.type}`);
         }
     }
 
-    private async handlePaymentSuccess(paymentIntent: any): Promise<void> {
-        const userId = paymentIntent?.metadata?.userId;
-        const plan = paymentIntent?.metadata?.plan as SubscriptionPlan;
+    private async handlePaymentSuccess(stripeObject: any): Promise<void> {
+        const userId = stripeObject?.metadata?.userId || (stripeObject.subscription_details?.metadata?.userId);
+        const plan = stripeObject?.metadata?.plan || (stripeObject.subscription_details?.metadata?.plan) as SubscriptionPlan;
+        
+        let subscriptionId = stripeObject.subscription;
+        if (!subscriptionId && stripeObject.id.startsWith('sub_')) subscriptionId = stripeObject.id;
 
-        if (!userId || !plan) {
-            this.logger.warn('Payment success webhook missing metadata');
+        // If no metadata but we have customer, we can look up by stripeCustomerId
+        let finalUserId = userId;
+        if (!finalUserId && stripeObject.customer) {
+             const user = await this.userRepository.findOne({ where: { stripeCustomerId: stripeObject.customer as string } });
+             if (user) finalUserId = user.id;
+        }
+
+        if (!finalUserId) {
+            this.logger.warn(`Stripe object succeeded but unable to find user metadata. Object ID: ${stripeObject.id}`);
             return;
         }
 
-        // Activate subscription
-        let subscription = await this.subscriptionRepository.findOne({ where: { userId } });
-        if (subscription) {
-            subscription.plan = plan;
-            subscription.status = SubscriptionStatus.ACTIVE;
-            subscription.startDate = new Date();
-            subscription.endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
-            subscription.paymentReference = paymentIntent.id;
-        } else {
-            subscription = this.subscriptionRepository.create({
-                userId,
-                plan,
+        let existingSub = await this.subscriptionRepository.findOne({ where: { userId: finalUserId } });
+        if (existingSub) {
+            if (plan) existingSub.plan = plan;
+            existingSub.status = SubscriptionStatus.ACTIVE;
+            existingSub.startDate = new Date();
+            existingSub.endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // +30 days
+            existingSub.paymentReference = stripeObject.id;
+            if (subscriptionId) existingSub.stripeSubscriptionId = subscriptionId as string;
+            await this.subscriptionRepository.save(existingSub);
+        } else if (plan) {
+            existingSub = this.subscriptionRepository.create({
+                userId: finalUserId,
+                plan: plan,
                 status: SubscriptionStatus.ACTIVE,
                 startDate: new Date(),
                 endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-                paymentReference: paymentIntent.id,
+                paymentReference: stripeObject.id,
+                stripeSubscriptionId: subscriptionId as string,
             });
+            await this.subscriptionRepository.save(existingSub);
         }
-        await this.subscriptionRepository.save(subscription);
 
-        this.logger.log(`Subscription activated for user ${userId}: ${plan}`);
+        this.logger.log(`Subscription activated for user ${finalUserId}`);
     }
 
-    private async handlePaymentFailure(paymentIntent: any): Promise<void> {
-        const userId = paymentIntent?.metadata?.userId;
-        this.logger.warn(`Payment failed for user ${userId}`);
+    private async handlePaymentFailure(stripeObject: any): Promise<void> {
+        let finalUserId = stripeObject?.metadata?.userId;
+        if (!finalUserId && stripeObject.customer) {
+             const user = await this.userRepository.findOne({ where: { stripeCustomerId: stripeObject.customer as string } });
+             if (user) finalUserId = user.id;
+        }
+        this.logger.warn(`Payment failed for user ${finalUserId}`);
+        
+        // Mark past due
+        if (finalUserId) {
+            await this.subscriptionRepository.update(
+                { userId: finalUserId, status: SubscriptionStatus.ACTIVE },
+                { status: SubscriptionStatus.EXPIRED },
+            );
+        }
     }
 
-    private async handleSubscriptionCancelled(subscription: any): Promise<void> {
-        const userId = subscription?.metadata?.userId;
-        if (!userId) return;
+    private async handleSubscriptionUpdated(subscription: any): Promise<void> {
+        let finalUserId = subscription?.metadata?.userId;
+        if (!finalUserId && subscription.customer) {
+             const user = await this.userRepository.findOne({ where: { stripeCustomerId: subscription.customer as string } });
+             if (user) finalUserId = user.id;
+        }
+        if (!finalUserId) return;
 
-        await this.subscriptionRepository.update(
-            { userId },
-            { status: SubscriptionStatus.CANCELLED },
-        );
-        this.logger.log(`Subscription cancelled for user ${userId}`);
+        if (subscription.status === 'canceled' || subscription.status === 'unpaid') {
+            await this.subscriptionRepository.update(
+                { userId: finalUserId },
+                { status: SubscriptionStatus.CANCELLED },
+            );
+            this.logger.log(`Subscription cancelled for user ${finalUserId}`);
+        } else if (subscription.status === 'active') {
+             await this.subscriptionRepository.update(
+                { userId: finalUserId },
+                { status: SubscriptionStatus.ACTIVE, stripeSubscriptionId: subscription.id },
+            );
+        }
     }
 
     // ─── PRICING INFO ────────────────────────────────────────

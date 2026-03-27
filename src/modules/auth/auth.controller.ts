@@ -36,6 +36,15 @@ export class AuthController {
 
     constructor(private readonly authService: AuthService) { }
 
+    @Public()
+    @Get('check-username')
+    @ApiOperation({ summary: 'Check if a username is available' })
+    @ApiResponse({ status: 200, description: 'Availability status returned' })
+    async checkUsername(@Query('username') username: string) {
+        const available = await this.authService.checkUsernameAvailable(username);
+        return { available };
+    }
+
     // ─── Registration Flow ──────────────────────────────────
 
     @Public()
