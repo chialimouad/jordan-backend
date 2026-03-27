@@ -25,6 +25,7 @@ import {
 } from './dto/auth.dto';
 import { RedisService } from '../redis/redis.service';
 import { MailService } from '../mail/mail.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 @Injectable()
 export class AuthService {
@@ -37,6 +38,7 @@ export class AuthService {
         private readonly configService: ConfigService,
         private readonly redisService: RedisService,
         private readonly mailService: MailService,
+        private readonly subscriptionsService: SubscriptionsService,
     ) { }
 
     // ─── REGISTRATION WITH OTP ──────────────────────────────
@@ -216,10 +218,17 @@ export class AuthService {
         await this.userRepository.update(user.id, {
             emailVerified: true,
             status: UserStatus.ACTIVE,
-            otpCode: null as any,
             otpExpiresAt: null as any,
             otpAttempts: 0,
         });
+
+        // Grant 3-day free premium trial
+        try {
+            await this.subscriptionsService.createTrialSubscription(user.id, 3);
+            this.logger.log(`[OTP] 🎁 Trial subscription granted to ${email}`);
+        } catch (trialErr) {
+            this.logger.error(`[OTP] ❌ Failed to grant trial to ${email}: ${trialErr.message}`);
+        }
 
         // Generate tokens
         user.status = UserStatus.ACTIVE;

@@ -20,6 +20,36 @@ export class SubscriptionsService {
         private readonly redisService: RedisService,
     ) { }
 
+    async createTrialSubscription(userId: string, days: number = 3): Promise<Subscription> {
+        // Check if user already has a subscription
+        const existing = await this.subscriptionRepository.findOne({
+            where: { userId },
+        });
+
+        if (existing) {
+            // If they have one, don't give a trial (prevents abuse)
+            return existing;
+        }
+
+        const now = new Date();
+        const endDate = new Date(now);
+        endDate.setDate(endDate.getDate() + days);
+
+        const subscription = this.subscriptionRepository.create({
+            userId,
+            plan: SubscriptionPlan.PREMIUM, // Default trial to premium
+            status: SubscriptionStatus.ACTIVE,
+            startDate: now,
+            endDate,
+        });
+
+        const saved = await this.subscriptionRepository.save(subscription);
+        await this.redisService.del(`premium:${userId}`);
+        await this.redisService.del(`plan:${userId}`);
+        
+        return saved;
+    }
+
     async getMySubscription(userId: string): Promise<Subscription> {
         let sub = await this.subscriptionRepository.findOne({
             where: { userId },
@@ -93,7 +123,18 @@ export class SubscriptionsService {
         const sub = await this.subscriptionRepository.findOne({
             where: { userId, status: SubscriptionStatus.ACTIVE },
         });
-        return sub ? sub.plan !== SubscriptionPlan.FREE : false;
+        
+        if (!sub || sub.plan === SubscriptionPlan.FREE) return false;
+
+        // Check for expiry
+        if (sub.endDate && new Date() > sub.endDate) {
+            // Silently mark as expired if we caught it here
+            await this.subscriptionRepository.update(sub.id, { status: SubscriptionStatus.EXPIRED });
+            await this.redisService.del(`premium:${userId}`);
+            return false;
+        }
+
+        return true;
     }
 
     async getPlanFeatures(plan: SubscriptionPlan) {

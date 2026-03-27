@@ -8,6 +8,8 @@ import { Repository } from 'typeorm';
 import { User, UserStatus } from '../../database/entities/user.entity';
 import { Profile } from '../../database/entities/profile.entity';
 import { Photo } from '../../database/entities/photo.entity';
+import { Like, LikeType } from '../../database/entities/like.entity';
+import { Boost } from '../../database/entities/boost.entity';
 import { RedisService } from '../redis/redis.service';
 
 @Injectable()
@@ -19,6 +21,10 @@ export class UsersService {
         private readonly profileRepository: Repository<Profile>,
         @InjectRepository(Photo)
         private readonly photoRepository: Repository<Photo>,
+        @InjectRepository(Like)
+        private readonly likeRepository: Repository<Like>,
+        @InjectRepository(Boost)
+        private readonly boostRepository: Repository<Boost>,
         private readonly redisService: RedisService,
     ) { }
 
@@ -44,12 +50,18 @@ export class UsersService {
     async getMe(userId: string) {
         const user = await this.findById(userId);
 
-        // Load profile + photos so Flutter gets the full user object
-        const [profile, photos] = await Promise.all([
+        // Load profile + photos + stats
+        const [profile, photos, sentComplimentsCount, profileBoostsCount] = await Promise.all([
             this.profileRepository.findOne({ where: { userId } }),
             this.photoRepository.find({
                 where: { userId },
                 order: { isMain: 'DESC', order: 'ASC' },
+            }),
+            this.likeRepository.count({
+                where: { likerId: userId, type: LikeType.COMPLIMENT },
+            }),
+            this.boostRepository.count({
+                where: { userId },
             }),
         ]);
 
@@ -57,6 +69,8 @@ export class UsersService {
             ...user,
             profile: profile || null,
             photos: photos || [],
+            sentComplimentsCount,
+            profileBoostsCount,
         };
     }
 
