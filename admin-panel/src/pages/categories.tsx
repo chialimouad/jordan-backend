@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { categoriesApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import * as icons from 'lucide-react'
 import {
   Plus,
   Pencil,
@@ -208,8 +209,24 @@ export default function CategoriesPage() {
 
   const getFieldDef = (field: string) => PROFILE_FIELDS.find(f => f.value === field)
 
+  const [iconSearch, setIconSearch] = useState('')
+
+  const ICONS = {
+    'heart': <icons.Heart />, 'star': <icons.Star />, 'crown': <icons.Crown />, 'zap': <icons.Zap />,
+    'sparkles': <icons.Sparkles />, 'shield': <icons.Shield />, 'award': <icons.Award />, 'compass': <icons.Compass />,
+    'gift': <icons.Gift />, 'coffee': <icons.Coffee />, 'music': <icons.Music />, 'camera': <icons.Camera />,
+    'globe': <icons.Globe />, 'activity': <icons.Activity />, 'users': <icons.Users />, 'flame': <icons.Flame />,
+    'moon': <icons.Moon />, 'sun': <icons.Sun />, 'cloud': <icons.Cloud />, 'briefcase': <icons.Briefcase />,
+    'graduation-cap': <icons.GraduationCap />, 'landmark': <icons.Landmark />, 'palette': <icons.Palette />,
+    'utensils': <icons.Utensils />, 'plane': <icons.Plane />, 'car': <icons.Car />, 'bike': <icons.Bike />,
+    'medal': <icons.Medal />, 'trophy': <icons.Trophy />, 'target': <icons.Target />,
+  }
+
+  const filteredIcons = Object.keys(ICONS).filter(k => k.includes(iconSearch.toLowerCase()))
+
   return (
     <div className="space-y-6">
+      {/* ... Header stays same ... */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -237,8 +254,46 @@ export default function CategoriesPage() {
                 <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Active Users" />
               </div>
               <div className="space-y-1.5">
-                <label className="text-sm font-medium">Icon Key</label>
-                <Input value={form.icon} onChange={e => setForm(f => ({ ...f, icon: e.target.value }))} placeholder="mosque, heart, crown" />
+                <label className="text-sm font-medium">Icon Selector</label>
+                <div className="flex items-center gap-2">
+                  <Select value={form.icon} onValueChange={(v: any) => setForm(f => ({ ...f, icon: v }))}>
+                    <SelectTrigger className="flex-1 capitalize">
+                      <div className="flex items-center gap-2">
+                        {form.icon && ICONS[form.icon as keyof typeof ICONS]}
+                        <SelectValue placeholder="Select icon..." />
+                      </div>
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[300px]">
+                      <div className="p-2 sticky top-0 bg-popover z-10">
+                        <Input 
+                          placeholder="Search icons..." 
+                          value={iconSearch} 
+                          onChange={e => setIconSearch(e.target.value)}
+                          onClick={e => e.stopPropagation()}
+                          className="h-8 text-xs"
+                        />
+                      </div>
+                      <div className="grid grid-cols-5 gap-1 p-1">
+                        {filteredIcons.map(iconKey => (
+                          <SelectItem 
+                            key={iconKey} 
+                            value={iconKey}
+                            className="p-2 cursor-pointer hover:bg-muted rounded-md flex items-center justify-center"
+                          >
+                            <div className="h-6 w-6 flex items-center justify-center">
+                              {ICONS[iconKey as keyof typeof ICONS]}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </div>
+                    </SelectContent>
+                  </Select>
+                  {form.icon && (
+                    <Button variant="ghost" size="icon" onClick={() => setForm(f => ({ ...f, icon: '' }))} className="h-10 w-10 text-muted-foreground">
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
               </div>
               <div className="md:col-span-2 space-y-1.5">
                 <label className="text-sm font-medium">Description</label>

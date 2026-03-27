@@ -31,6 +31,14 @@ export class CategoriesService {
         const category = this.categoryRepo.create(dto);
         const saved = await this.categoryRepo.save(category);
         this.logger.log(`Category created: ${saved.name} (${saved.id})`);
+        
+        // Automate user assignment based on rules
+        if (saved.rules && saved.rules.length > 0) {
+            this.rebuildCategory(saved.id).catch(err => {
+                this.logger.error(`Failed to automate assignment for ${saved.id}: ${err.message}`);
+            });
+        }
+        
         await this.invalidateCache();
         return saved;
     }
@@ -58,9 +66,21 @@ export class CategoriesService {
 
     async update(id: string, dto: UpdateCategoryDto): Promise<Category> {
         const category = await this.findOne(id);
+        
+        // Track if rules changed
+        const rulesChanged = dto.rules && JSON.stringify(dto.rules) !== JSON.stringify(category.rules);
+        
         Object.assign(category, dto);
         const saved = await this.categoryRepo.save(category);
         this.logger.log(`Category updated: ${saved.name} (${saved.id})`);
+
+        if (rulesChanged) {
+            this.logger.log(`Category rules changed for "${saved.name}", triggering users rebuild...`);
+            this.rebuildCategory(saved.id).catch(err => {
+                this.logger.error(`Failed to rebuild assignment for ${saved.id}: ${err.message}`);
+            });
+        }
+
         await this.invalidateCache();
         return saved;
     }
