@@ -241,7 +241,7 @@ export class AuthService {
 
         return {
             message: 'Email verified successfully',
-            user: await this.usersService.getMe(user.id),
+            user: this.sanitizeUser(await this.usersService.getMe(user.id)),
             ...tokens,
         };
     }
@@ -408,7 +408,7 @@ export class AuthService {
         this.logger.log(`User logged in: ${email} from ${clientIp}`);
 
         return {
-            user: await this.usersService.getMe(user.id),
+            user: this.sanitizeUser(await this.usersService.getMe(user.id)),
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
         };
