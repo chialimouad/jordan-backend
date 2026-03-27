@@ -8,7 +8,7 @@ import {
     ConnectedSocket,
     MessageBody,
 } from '@nestjs/websockets';
-import { Logger, Inject, Optional } from '@nestjs/common';
+import { Logger, Inject, Optional, forwardRef } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -34,6 +34,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly logger = new Logger(ChatGateway.name);
 
     constructor(
+        @Inject(forwardRef(() => ChatService))
         private readonly chatService: ChatService,
         private readonly redisService: RedisService,
         private readonly jwtService: JwtService,
@@ -178,16 +179,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
         try {
             // Determine message type
-            let msgType = MessageType.TEXT;
+            const msgType = MessageType.TEXT;
             let msgContent = content;
-
-            if (type === 'image' || imageUrl) {
-                msgType = MessageType.IMAGE;
-                msgContent = imageUrl || content;
-            } else if (type === 'voice') {
-                msgType = MessageType.VOICE;
-                msgContent = content; // audio URL
-            }
 
             // Content moderation for text messages
             let flagged = false;
