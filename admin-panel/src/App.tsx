@@ -28,6 +28,7 @@ import AuditLogsPage from '@/pages/audit-logs'
 import GuidePage from '@/pages/guide'
 import CategoriesPage from '@/pages/categories'
 import DailyInsightsPage from '@/pages/daily-insights'
+import ContentManagementPage from '@/pages/content'
 
 export default function App() {
   return (
@@ -62,6 +63,7 @@ export default function App() {
                 <Route path="/categories" element={<CategoriesPage />} />
                 <Route path="/daily-insights" element={<DailyInsightsPage />} />
                 <Route path="/guide" element={<GuidePage />} />
+                <Route path="/content" element={<ContentManagementPage />} />
               </Route>
             </Routes>
           </AuthProvider>

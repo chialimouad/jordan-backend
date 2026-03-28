@@ -325,3 +325,25 @@ export const userReportsApi = {
   unblock: (id: string) => api.delete(`/reports/block/${id}`),
   getBlocked: () => api.get('/reports/blocked'),
 }
+
+// ── Content Management (CMS) ────────────────────────────────
+
+export const contentApi = {
+  // Static Pages
+  getAllContent: () => api.get('/content'),
+  createContent: (data: Record<string, any>) => api.post('/content', data),
+  updateContent: (id: string, data: Record<string, any>) => api.patch(`/content/${id}`, data),
+  deleteContent: (id: string) => api.delete(`/content/${id}`),
+
+  // FAQs
+  getAllFaqs: () => api.get('/content/faqs/all'),
+  createFaq: (data: Record<string, any>) => api.post('/content/faqs', data),
+  updateFaq: (id: string, data: Record<string, any>) => api.patch(`/content/faqs/${id}`, data),
+  deleteFaq: (id: string) => api.delete(`/content/faqs/${id}`),
+
+  // Jobs
+  getAllJobs: () => api.get('/content/jobs/all'),
+  createJob: (data: Record<string, any>) => api.post('/content/jobs', data),
+  updateJob: (id: string, data: Record<string, any>) => api.patch(`/content/jobs/${id}`, data),
+  deleteJob: (id: string) => api.delete(`/content/jobs/${id}`),
+}
