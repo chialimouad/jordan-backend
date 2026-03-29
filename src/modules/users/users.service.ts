@@ -138,7 +138,7 @@ export class UsersService {
 
     async isUsernameAvailable(username: string): Promise<boolean> {
         const count = await this.userRepository.count({
-            where: { username },
+            where: { username: username.toLowerCase() },
         });
         return count === 0;
     }

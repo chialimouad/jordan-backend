@@ -70,7 +70,7 @@ export class AuthService {
                 existingUser.firstName = firstName;
                 existingUser.lastName = lastName;
                 if (phone !== undefined) existingUser.phone = phone;
-                if (username !== undefined) existingUser.username = username;
+                if (username !== undefined) existingUser.username = username.toLowerCase();
                 existingUser.otpCode = hashedOtp;
                 existingUser.otpExpiresAt = otpExpiry;
                 existingUser.otpAttempts = 0;
@@ -122,7 +122,7 @@ export class AuthService {
             firstName,
             lastName,
             phone,
-            username,
+            username: username?.toLowerCase(),
             status: UserStatus.PENDING_VERIFICATION,
             otpCode: hashedOtp,
             otpExpiresAt: otpExpiry,
@@ -358,7 +358,10 @@ export class AuthService {
         }
 
         const user = await this.userRepository.findOne({
-            where: { email },
+            where: [
+                { email: email.toLowerCase() },
+                { username: email.toLowerCase() },
+            ],
             select: [
                 'id', 'email', 'password', 'firstName', 'lastName',
                 'role', 'status', 'emailVerified',

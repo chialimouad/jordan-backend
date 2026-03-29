@@ -67,7 +67,7 @@ export class ResendOtpDto {
 
 export class LoginDto {
     @ApiProperty({ example: 'user@example.com' })
-    @IsEmail()
+    @IsString()
     email: string;
 
     @ApiProperty({ example: 'StrongP@ss123' })

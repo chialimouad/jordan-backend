@@ -8,6 +8,7 @@ import {
     Body,
     Query,
     UseGuards,
+    Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { ContentService } from './content.service';
@@ -17,6 +18,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 @ApiTags('content')
 @Controller('content')
 export class ContentController {
+    private readonly logger = new Logger(ContentController.name);
+
     constructor(private readonly contentService: ContentService) {}
 
 
@@ -56,13 +59,14 @@ export class ContentController {
     // ─── FAQ Endpoints ───────────────────────────────────────
 
     @Get('faqs/list')
-    @ApiOperation({ summary: 'Get published FAQs' })
+    @ApiOperation({ summary: 'Get published FAQs (public)' })
     @ApiQuery({ name: 'locale', required: false })
     @ApiQuery({ name: 'category', required: false })
-    async getFaqs(
+    async getFaqsPublic(
         @Query('locale') locale?: string,
         @Query('category') category?: string,
     ) {
+        this.logger.log(`[FAQ] Public request: locale=${locale}, category=${category}`);
         return this.contentService.getFaqs(locale || 'en', category);
     }
 
@@ -70,8 +74,9 @@ export class ContentController {
     @ApiBearerAuth()
     @UseGuards(JwtAuthGuard)
     @ApiOperation({ summary: 'Get all FAQs (admin)' })
-    async getAllFaqs() {
-        return this.contentService.getAllFaqs();
+    async getFaqs() {
+        this.logger.log('[FAQ] Admin requested all FAQs');
+        return this.contentService.getFaqs();
     }
 
     @Post('faqs')
@@ -187,6 +192,7 @@ export class ContentController {
         @Param('type') type: string,
         @Query('locale') locale?: string,
     ) {
+        this.logger.log(`[Content] Public request: type=${type}, locale=${locale}`);
         return this.contentService.getByType(type, locale || 'en');
     }
 }
