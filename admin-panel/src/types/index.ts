@@ -36,9 +36,9 @@ export enum ReportStatus {
 }
 
 export enum PhotoModerationStatus {
-  PENDING = 'PENDING',
-  APPROVED = 'APPROVED',
-  REJECTED = 'REJECTED',
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
 }
 
 export enum ContentFlagStatus {
