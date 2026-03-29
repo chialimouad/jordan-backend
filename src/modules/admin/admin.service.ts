@@ -223,15 +223,13 @@ export class AdminService implements OnModuleInit {
 
     async getUserActivity(userId: string) {
         const [
-            likesGiven, likesReceived, superLikesGiven, superLikesReceived,
+            likesGiven, likesReceived,
             complimentsGiven, complimentsReceived, passesGiven,
             matchesCount, messagesCount, reportsCount, photosCount,
             boostsCount,
         ] = await Promise.all([
             this.likeRepository.count({ where: { likerId: userId, type: LikeType.LIKE } }),
             this.likeRepository.count({ where: { likedId: userId, type: LikeType.LIKE } }),
-            this.likeRepository.count({ where: { likerId: userId, type: LikeType.SUPER_LIKE } }),
-            this.likeRepository.count({ where: { likedId: userId, type: LikeType.SUPER_LIKE } }),
             this.likeRepository.count({ where: { likerId: userId, type: LikeType.COMPLIMENT } }),
             this.likeRepository.count({ where: { likedId: userId, type: LikeType.COMPLIMENT } }),
             this.likeRepository.count({ where: { likerId: userId, type: LikeType.PASS } }),
@@ -253,7 +251,6 @@ export class AdminService implements OnModuleInit {
 
         return {
             likes: { given: likesGiven, received: likesReceived },
-            superLikes: { given: superLikesGiven, received: superLikesReceived },
             compliments: { given: complimentsGiven, received: complimentsReceived },
             passes: passesGiven,
             matches: matchesCount,
@@ -600,7 +597,6 @@ export class AdminService implements OnModuleInit {
             pendingPhotos,
             totalMessages,
             totalLikes,
-            totalSuperLikes,
             totalCompliments,
             totalPasses,
             totalBoosts,
@@ -626,7 +622,6 @@ export class AdminService implements OnModuleInit {
             this.photoRepository.count({ where: { moderationStatus: PhotoModerationStatus.PENDING } }),
             this.messageRepository.count(),
             this.likeRepository.count({ where: { type: LikeType.LIKE } }),
-            this.likeRepository.count({ where: { type: LikeType.SUPER_LIKE } }),
             this.likeRepository.count({ where: { type: LikeType.COMPLIMENT } }),
             this.likeRepository.count({ where: { type: LikeType.PASS } }),
             this.boostRepository.count(),
@@ -670,7 +665,6 @@ export class AdminService implements OnModuleInit {
             },
             swipes: {
                 totalLikes,
-                totalSuperLikes,
                 totalCompliments,
                 totalPasses,
             },

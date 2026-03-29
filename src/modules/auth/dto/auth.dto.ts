@@ -123,3 +123,23 @@ export class UpdateFcmTokenDto {
     @IsString()
     fcmToken: string;
 }
+
+export class GoogleSignInDto {
+    @ApiProperty({ description: 'Google ID token from client' })
+    @IsString()
+    idToken: string;
+
+    @ApiProperty({ example: 'user@gmail.com' })
+    @IsEmail()
+    email: string;
+
+    @ApiPropertyOptional({ example: 'John Doe' })
+    @IsOptional()
+    @IsString()
+    displayName?: string;
+
+    @ApiPropertyOptional({ example: 'https://...' })
+    @IsOptional()
+    @IsString()
+    photoUrl?: string;
+}

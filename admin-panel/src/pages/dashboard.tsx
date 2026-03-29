@@ -143,9 +143,8 @@ export default function DashboardPage() {
       </div>
 
       {/* Swipes & Engagement Stats */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatsCard title="Likes" value={stats.swipes?.totalLikes?.toLocaleString() ?? '0'} icon={Heart} iconColor="text-pink-500" />
-        <StatsCard title="Super Likes" value={stats.swipes?.totalSuperLikes?.toLocaleString() ?? '0'} icon={Sparkles} iconColor="text-purple-500" />
         <StatsCard title="Compliments" value={stats.swipes?.totalCompliments?.toLocaleString() ?? '0'} icon={MessageCircleHeart} iconColor="text-amber-500" />
         <StatsCard title="Passes" value={stats.swipes?.totalPasses?.toLocaleString() ?? '0'} icon={EyeOff} iconColor="text-gray-400" />
         <StatsCard title="Boosts" value={stats.engagement?.totalBoosts?.toLocaleString() ?? '0'} icon={Zap} iconColor="text-orange-500" />

@@ -32,13 +32,13 @@ export default function SearchUsersPage() {
   const [roleFilter, setRoleFilter] = useState<string>('all')
   const [page, setPage] = useState(1)
 
-  // Auto-search when navigated from header search bar with ?q=
+  // Auto-search when navigated from header search bar with ?q= or on mount
   useEffect(() => {
     const q = searchParams.get('q')
     if (q) {
       setSearchQuery(q)
-      performSearch(q, statusFilter, roleFilter)
     }
+    performSearch(q || '', statusFilter, roleFilter)
   }, [searchParams.get('q')])
 
   const performSearch = async (query?: string, status?: string, role?: string) => {

@@ -28,7 +28,6 @@ import {
 
 const typeConfig: Record<string, { label: string; color: string; icon: any }> = {
   like: { label: 'Like', color: 'bg-pink-100 text-pink-700', icon: Heart },
-  super_like: { label: 'Super Like', color: 'bg-purple-100 text-purple-700', icon: Sparkles },
   compliment: { label: 'Compliment', color: 'bg-amber-100 text-amber-700', icon: MessageCircleHeart },
   pass: { label: 'Pass', color: 'bg-gray-100 text-gray-700', icon: HeartOff },
 }
@@ -69,7 +68,7 @@ export default function ActivityPage() {
       </div>
 
       {/* Quick Stats */}
-      <div className="grid gap-4 sm:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-3">
         {Object.entries(typeConfig).map(([key, cfg]) => {
           const Icon = cfg.icon
           return (
@@ -97,7 +96,6 @@ export default function ActivityPage() {
           <SelectContent>
             <SelectItem value="all">{t('common.all')}</SelectItem>
             <SelectItem value="like">Likes</SelectItem>
-            <SelectItem value="super_like">Super Likes</SelectItem>
             <SelectItem value="compliment">Compliments</SelectItem>
             <SelectItem value="pass">Passes</SelectItem>
           </SelectContent>

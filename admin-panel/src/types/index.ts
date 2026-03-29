@@ -217,7 +217,7 @@ export interface Swipe {
   id: string
   swiperId: string
   targetId: string
-  type: 'like' | 'super_like' | 'compliment' | 'pass'
+  type: 'like' | 'compliment' | 'pass'
   message?: string
   createdAt: string
   swiper?: User
@@ -302,7 +302,6 @@ export interface DashboardStats {
   }
   swipes: {
     totalLikes: number
-    totalSuperLikes: number
     totalCompliments: number
     totalPasses: number
   }

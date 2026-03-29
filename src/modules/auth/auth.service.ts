@@ -22,6 +22,7 @@ import {
     ForgotPasswordDto,
     VerifyResetOtpDto,
     ResetPasswordDto,
+    GoogleSignInDto,
 } from './dto/auth.dto';
 import { RedisService } from '../redis/redis.service';
 import { MailService } from '../mail/mail.service';
@@ -422,6 +423,111 @@ export class AuthService {
         }).catch(() => {});
 
         this.logger.log(`User logged in: ${email} from ${clientIp}`);
+
+        return {
+            user: this.sanitizeUser(await this.usersService.getMe(user.id)),
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+        };
+    }
+
+    // ─── GOOGLE SIGN-IN ──────────────────────────────────────
+
+    async googleSignIn(dto: GoogleSignInDto, clientIp?: string, userAgent?: string) {
+        const { email, displayName, photoUrl } = dto;
+        this.logger.log(`[GoogleSignIn] Processing for email=${email}`);
+
+        // Check if user already exists
+        let user = await this.userRepository.findOne({
+            where: { email: email.toLowerCase() },
+            select: ['id', 'email', 'firstName', 'lastName', 'role', 'status', 'emailVerified'],
+        });
+
+        if (user) {
+            // Existing user - check status
+            if (user.status === UserStatus.BANNED) {
+                throw new UnauthorizedException('Your account has been banned');
+            }
+            if (user.status === UserStatus.SUSPENDED) {
+                throw new UnauthorizedException('Your account is suspended');
+            }
+
+            // If user was pending verification, activate them (Google verifies email)
+            if (user.status === UserStatus.PENDING_VERIFICATION) {
+                await this.userRepository.update(user.id, {
+                    status: UserStatus.ACTIVE,
+                    emailVerified: true,
+                });
+                user.status = UserStatus.ACTIVE;
+                user.emailVerified = true;
+            }
+
+            this.logger.log(`[GoogleSignIn] Existing user found: ${user.id}`);
+        } else {
+            // New user - create account
+            const names = displayName?.split(' ') || ['User'];
+            const firstName = names[0] || 'User';
+            const lastName = names.slice(1).join(' ') || '';
+
+            // Generate a random password (user won't use it, they'll use Google)
+            const randomPassword = randomUUID();
+            const hashedPassword = await bcrypt.hash(randomPassword, 12);
+
+            // Generate unique username from email
+            let baseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '');
+            let username = baseUsername;
+            let counter = 1;
+            while (await this.userRepository.findOne({ where: { username } })) {
+                username = `${baseUsername}${counter}`;
+                counter++;
+            }
+
+            user = this.userRepository.create({
+                email: email.toLowerCase(),
+                password: hashedPassword,
+                firstName,
+                lastName,
+                username,
+                status: UserStatus.ACTIVE,
+                emailVerified: true,
+                lastKnownIp: clientIp,
+            });
+
+            await this.userRepository.save(user);
+            this.logger.log(`[GoogleSignIn] New user created: ${user.id}`);
+
+            // Grant trial subscription for new users
+            try {
+                await this.subscriptionsService.createTrialSubscription(user.id);
+            } catch (err) {
+                this.logger.warn(`[GoogleSignIn] Trial grant failed: ${err.message}`);
+            }
+
+            // Create Stripe customer
+            try {
+                await this.paymentsService.createCustomer(user.id, email, `${firstName} ${lastName}`);
+            } catch (err) {
+                this.logger.warn(`[GoogleSignIn] Stripe customer creation failed: ${err.message}`);
+            }
+        }
+
+        // Generate tokens
+        const tokens = await this.generateTokens(user);
+        await this.updateRefreshToken(user.id, tokens.refreshToken, tokens.familyId);
+        await this.userRepository.update(user.id, { lastLoginAt: new Date(), lastKnownIp: clientIp || undefined });
+
+        // Audit log
+        this.redisService.appendAuditLog({
+            type: 'login',
+            userId: user.id,
+            email: user.email,
+            action: 'google_signin_success',
+            familyId: tokens.familyId,
+            ip: clientIp,
+            userAgent,
+        }).catch(() => {});
+
+        this.logger.log(`[GoogleSignIn] User authenticated: ${email} from ${clientIp}`);
 
         return {
             user: this.sanitizeUser(await this.usersService.getMe(user.id)),

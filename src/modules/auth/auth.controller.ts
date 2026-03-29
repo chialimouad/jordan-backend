@@ -24,6 +24,7 @@ import {
     VerifyResetOtpDto,
     ResetPasswordDto,
     UpdateFcmTokenDto,
+    GoogleSignInDto,
 } from './dto/auth.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -95,6 +96,26 @@ export class AuthController {
     @ApiResponse({ status: 429, description: 'Too many login attempts' })
     async login(@Body() loginDto: LoginDto, @Req() req: any) {
         return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
+    }
+
+    // ─── Google Sign-In ─────────────────────────────────────
+
+    @Public()
+    @Post('google')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Sign in or register with Google' })
+    @ApiResponse({ status: 200, description: 'Google sign-in successful' })
+    @ApiResponse({ status: 401, description: 'Invalid Google token' })
+    async googleSignIn(@Body() dto: GoogleSignInDto, @Req() req: any) {
+        this.logger.log(`[GoogleSignIn] Attempt for email=${dto.email}`);
+        try {
+            const result = await this.authService.googleSignIn(dto, req.ip, req.headers['user-agent']);
+            this.logger.log(`[GoogleSignIn] Success for email=${dto.email}`);
+            return result;
+        } catch (error) {
+            this.logger.error(`[GoogleSignIn] FAILED for email=${dto.email}: ${error.message}`, error.stack);
+            throw error;
+        }
     }
 
     // ─── Token Management ───────────────────────────────────

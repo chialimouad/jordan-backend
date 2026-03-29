@@ -39,9 +39,11 @@ export function StaticContentTab() {
     setLoading(true)
     try {
       const res = await contentApi.getAllContent()
-      setContents(res.data || [])
-    } catch (err) {
-      toast({ title: 'Error', description: 'Failed to fetch contents', variant: 'error' })
+      const data = res.data
+      setContents(Array.isArray(data) ? data : data?.contents || data?.data || [])
+    } catch (err: any) {
+      console.error('Content fetch error:', err?.response?.data || err)
+      toast({ title: 'Error', description: err?.response?.data?.message || 'Failed to fetch contents', variant: 'error' })
     } finally {
       setLoading(false)
     }
