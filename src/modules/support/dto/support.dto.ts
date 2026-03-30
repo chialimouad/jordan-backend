@@ -29,3 +29,28 @@ export class UpdateTicketStatusDto {
     @MaxLength(2000)
     adminReply?: string;
 }
+
+export enum FeedbackType {
+    FEEDBACK = 'feedback',
+    BUG = 'bug',
+    SUGGESTION = 'suggestion',
+}
+
+export class CreateFeedbackDto {
+    @ApiProperty({ enum: FeedbackType, description: 'Type of feedback' })
+    @IsEnum(FeedbackType)
+    type: FeedbackType;
+
+    @ApiProperty({ description: 'Feedback message' })
+    @IsString()
+    @IsNotEmpty()
+    @MinLength(10)
+    @MaxLength(2000)
+    message: string;
+
+    @ApiPropertyOptional({ description: 'Contact email (optional)' })
+    @IsOptional()
+    @IsString()
+    @MaxLength(100)
+    email?: string;
+}

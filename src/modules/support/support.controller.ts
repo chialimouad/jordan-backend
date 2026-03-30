@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { SupportService } from './support.service';
-import { CreateSupportTicketDto, UpdateTicketStatusDto } from './dto/support.dto';
+import { CreateSupportTicketDto, UpdateTicketStatusDto, CreateFeedbackDto } from './dto/support.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -74,5 +74,16 @@ export class SupportController {
         @Body() dto: UpdateTicketStatusDto,
     ) {
         return this.supportService.updateTicketStatus(ticketId, dto);
+    }
+
+    // ─── Feedback endpoint ───────────────────────────────────
+
+    @Post('feedback')
+    @ApiOperation({ summary: 'Submit feedback, bug report, or suggestion' })
+    async submitFeedback(
+        @CurrentUser('sub') userId: string,
+        @Body() dto: CreateFeedbackDto,
+    ) {
+        return this.supportService.submitFeedback(userId, dto);
     }
 }

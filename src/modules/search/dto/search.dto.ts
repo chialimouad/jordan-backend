@@ -86,8 +86,15 @@ export class SearchFiltersDto {
 
     @ApiPropertyOptional({ description: 'Only show verified users' })
     @IsOptional()
+    @Type(() => Boolean)
     @IsBoolean()
     verifiedOnly?: boolean;
+
+    @ApiPropertyOptional({ description: 'Only show online users' })
+    @IsOptional()
+    @Type(() => Boolean)
+    @IsBoolean()
+    onlineOnly?: boolean;
 
     @ApiPropertyOptional({ description: 'Max distance in km (requires user location)' })
     @IsOptional()

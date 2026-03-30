@@ -76,4 +76,27 @@ export class ChatController {
         const count = await this.chatService.getTotalUnreadCount(userId);
         return { unreadCount: count };
     }
+
+    // ─── CHAT SETTINGS ─────────────────────────────────────
+
+    @Get('settings')
+    @ApiOperation({ summary: 'Get chat settings' })
+    async getChatSettings(@CurrentUser('sub') userId: string) {
+        return this.chatService.getChatSettings(userId);
+    }
+
+    @Patch('settings')
+    @ApiOperation({ summary: 'Update chat settings' })
+    async updateChatSettings(
+        @CurrentUser('sub') userId: string,
+        @Body() settings: {
+            readReceipts?: boolean;
+            typingIndicator?: boolean;
+            autoDownloadMedia?: boolean;
+            receiveDMs?: boolean;
+        },
+    ) {
+        await this.chatService.updateChatSettings(userId, settings);
+        return { message: 'Chat settings updated' };
+    }
 }

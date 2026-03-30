@@ -199,6 +199,21 @@ export class SearchService {
             query.andWhere('user.selfieVerified = :verified', { verified: true });
         }
 
+        // Online only filter - use Redis to get online user IDs
+        if (filters.onlineOnly) {
+            try {
+                const onlineUserIds = await this.redisService.getOnlineUsers();
+                if (onlineUserIds.length > 0) {
+                    query.andWhere('profile.userId IN (:...onlineUserIds)', { onlineUserIds });
+                } else {
+                    // No users online - return empty results
+                    query.andWhere('1 = 0');
+                }
+            } catch (err) {
+                this.logger.warn(`[Search] Failed to get online users: ${err?.message}`);
+            }
+        }
+
         // Reuse myProfile (fetched earlier) for distance sorting
         const hasUserLocation = !!(myProfile?.latitude && myProfile?.longitude);
 
@@ -255,6 +270,18 @@ export class SearchService {
 
         // Batch fetch ALL photos for all profiles (avoids N+1 query)
         const userIds = profiles.map(p => p.userId);
+
+        // Batch fetch online status for all users
+        let onlineStatusMap = new Map<string, boolean>();
+        try {
+            const onlineUsers = await this.redisService.getOnlineUsers();
+            const onlineSet = new Set(onlineUsers);
+            for (const uid of userIds) {
+                onlineStatusMap.set(uid, onlineSet.has(uid));
+            }
+        } catch (err) {
+            this.logger.warn(`[Search] Failed to fetch online status: ${err?.message}`);
+        }
         const photos = userIds.length > 0
             ? await this.photoRepository
                 .createQueryBuilder('photo')
@@ -303,6 +330,7 @@ export class SearchService {
             lastLoginAt: p.user?.lastLoginAt ?? null,
             createdAt: p.user?.createdAt ?? new Date(),
             updatedAt: p.user?.updatedAt ?? new Date(),
+            isOnline: onlineStatusMap.get(p.userId) ?? false,
             photos: photosMap.get(p.userId) ?? [],
             profile: {
                 id: p.id,

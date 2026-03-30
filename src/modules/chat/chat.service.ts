@@ -12,6 +12,7 @@ import { Match, MatchStatus } from '../../database/entities/match.entity';
 import { Conversation } from '../../database/entities/conversation.entity';
 import { Photo } from '../../database/entities/photo.entity';
 import { BlockedUser } from '../../database/entities/blocked-user.entity';
+import { User } from '../../database/entities/user.entity';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { ChatGateway } from './chat.gateway';
 
@@ -28,6 +29,8 @@ export class ChatService {
         private readonly photoRepository: Repository<Photo>,
         @InjectRepository(BlockedUser)
         private readonly blockedUserRepository: Repository<BlockedUser>,
+        @InjectRepository(User)
+        private readonly userRepository: Repository<User>,
         @Inject(forwardRef(() => ChatGateway))
         private readonly chatGateway: ChatGateway,
     ) { }
@@ -245,5 +248,40 @@ export class ChatService {
             throw new ForbiddenException('You are not part of this conversation');
         }
         return conversation;
+    }
+
+    // ─── CHAT SETTINGS ─────────────────────────────────────
+
+    async getChatSettings(userId: string) {
+        const user = await this.userRepository.findOne({
+            where: { id: userId },
+            select: ['id', 'readReceipts', 'typingIndicator', 'autoDownloadMedia', 'receiveDMs'],
+        });
+        if (!user) throw new NotFoundException('User not found');
+        return {
+            readReceipts: user.readReceipts ?? true,
+            typingIndicator: user.typingIndicator ?? true,
+            autoDownloadMedia: user.autoDownloadMedia ?? true,
+            receiveDMs: user.receiveDMs ?? true,
+        };
+    }
+
+    private static readonly ALLOWED_CHAT_SETTINGS = [
+        'readReceipts', 'typingIndicator', 'autoDownloadMedia', 'receiveDMs',
+    ];
+
+    async updateChatSettings(
+        userId: string,
+        settings: Record<string, boolean>,
+    ): Promise<void> {
+        const update: Record<string, boolean> = {};
+        for (const key of ChatService.ALLOWED_CHAT_SETTINGS) {
+            if (settings[key] !== undefined) {
+                update[key] = settings[key];
+            }
+        }
+        if (Object.keys(update).length > 0) {
+            await this.userRepository.update(userId, update);
+        }
     }
 }

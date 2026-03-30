@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/commo
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SupportTicket, TicketStatus } from '../../database/entities/support-ticket.entity';
-import { CreateSupportTicketDto, UpdateTicketStatusDto } from './dto/support.dto';
+import { CreateSupportTicketDto, UpdateTicketStatusDto, CreateFeedbackDto } from './dto/support.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
 @Injectable()
@@ -73,5 +73,16 @@ export class SupportService {
         const resolved = await this.ticketRepository.count({ where: { status: TicketStatus.RESOLVED } });
         const closed = await this.ticketRepository.count({ where: { status: TicketStatus.CLOSED } });
         return { open, inProgress, resolved, closed, total: open + inProgress + resolved + closed };
+    }
+
+    // ─── Feedback ────────────────────────────────────────────
+
+    async submitFeedback(userId: string, dto: CreateFeedbackDto): Promise<SupportTicket> {
+        const ticket = this.ticketRepository.create({
+            userId,
+            subject: `[${dto.type.toUpperCase()}] User Feedback`,
+            message: dto.message + (dto.email ? `\n\nContact email: ${dto.email}` : ''),
+        });
+        return this.ticketRepository.save(ticket);
     }
 }
