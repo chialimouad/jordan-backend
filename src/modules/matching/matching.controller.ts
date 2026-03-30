@@ -1,4 +1,4 @@
-import {
+﻿import {
     Controller,
     Get,
     Post,
@@ -45,8 +45,17 @@ export class MatchingController {
         return { userId, targetUserId, compatibilityScore: score };
     }
 
+    @Post('compatibility/bulk')
+    @ApiOperation({ summary: 'Get compatibility scores for multiple users at once' })
+    async getBulkCompatibility(
+        @CurrentUser('sub') userId: string,
+        @Body() body: { targetUserIds: string[] },
+    ) {
+        return this.matchingService.getBulkCompatibility(userId, body.targetUserIds);
+    }
+
     @Get('recommended')
-    @ApiOperation({ summary: 'Get "Recommended for You" — blended 60% compat + 40% collaborative filtering' })
+    @ApiOperation({ summary: 'Get "Recommended for You" â€” blended 60% compat + 40% collaborative filtering' })
     async getRecommendedForYou(
         @CurrentUser('sub') userId: string,
         @Query('limit') limit?: number,

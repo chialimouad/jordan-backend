@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { User } from '../../database/entities/user.entity';
@@ -35,7 +35,7 @@ export class MatchingService {
         private readonly redisService: RedisService,
     ) { }
 
-    // ─── BEHAVIOR TRACKING ──────────────────────────────────
+    // â”€â”€â”€ BEHAVIOR TRACKING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async trackSwipeBehavior(userId: string, targetUserId: string, action: LikeType): Promise<void> {
         const targetProfile = await this.profileRepository.findOne({ where: { userId: targetUserId } });
@@ -51,7 +51,7 @@ export class MatchingService {
             behavior.totalLikes++;
             if (action === LikeType.SUPER_LIKE) behavior.totalSuperLikes++;
 
-            // Learn from likes — aggregate preferred attributes
+            // Learn from likes â€” aggregate preferred attributes
             this.updatePreferredAttributes(behavior, targetProfile, true);
         } else {
             behavior.totalPasses++;
@@ -116,7 +116,7 @@ export class MatchingService {
         }
     }
 
-    // ─── SMART SUGGESTIONS WITH BEHAVIOR LEARNING ───────────
+    // â”€â”€â”€ SMART SUGGESTIONS WITH BEHAVIOR LEARNING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async getSmartSuggestions(userId: string, limit: number = 20): Promise<any[]> {
         const cacheKey = `smart_suggestions:${userId}`;
@@ -258,7 +258,7 @@ export class MatchingService {
         return enriched;
     }
 
-    // ─── PRECOMPUTE & CACHE COMPATIBILITY SCORES ────────────
+    // â”€â”€â”€ PRECOMPUTE & CACHE COMPATIBILITY SCORES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async precomputeCompatibility(userId: string): Promise<void> {
         const profile = await this.profileRepository.findOne({ where: { userId } });
@@ -286,6 +286,38 @@ export class MatchingService {
     async getCachedCompatibility(userId: string, targetUserId: string): Promise<number | null> {
         const scores = await this.redisService.getJson<Record<string, number>>(`compat:${userId}`);
         return scores?.[targetUserId] ?? null;
+    }
+
+    async getBulkCompatibility(userId: string, targetUserIds: string[]): Promise<Record<string, number>> {
+        if (!targetUserIds || targetUserIds.length === 0) return {};
+        const profile = await this.profileRepository.findOne({ where: { userId } });
+        if (!profile) return {};
+
+        // First try cached scores
+        const cached = await this.redisService.getJson<Record<string, number>>(`compat:${userId}`);
+        const result: Record<string, number> = {};
+        const uncachedIds: string[] = [];
+
+        for (const tid of targetUserIds) {
+            if (cached && cached[tid] !== undefined) {
+                result[tid] = cached[tid];
+            } else {
+                uncachedIds.push(tid);
+            }
+        }
+
+        // Compute any uncached scores
+        if (uncachedIds.length > 0) {
+            const candidates = await this.profileRepository
+                .createQueryBuilder('profile')
+                .where('profile.userId IN (:...ids)', { ids: uncachedIds })
+                .getMany();
+            for (const candidate of candidates) {
+                result[candidate.userId] = this.computeCompatibility(profile, candidate);
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -409,7 +441,7 @@ export class MatchingService {
         return deg * (Math.PI / 180);
     }
 
-    // ─── COLLABORATIVE FILTERING RECOMMENDATIONS ───────────
+    // â”€â”€â”€ COLLABORATIVE FILTERING RECOMMENDATIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async getCollaborativeRecommendations(userId: string, limit: number = 10): Promise<any[]> {
         const cacheKey = `collab_recs:${userId}`;
@@ -511,7 +543,7 @@ export class MatchingService {
         return enriched;
     }
 
-    // ─── BLENDED RECOMMENDATIONS (Spec: 60% compat + 40% collab) ──
+    // â”€â”€â”€ BLENDED RECOMMENDATIONS (Spec: 60% compat + 40% collab) â”€â”€
 
     async getRecommendedForYou(userId: string, limit: number = 10): Promise<any[]> {
         const cacheKey = `recommended:${userId}`;
@@ -548,7 +580,7 @@ export class MatchingService {
         return result;
     }
 
-    // ─── DIVERSITY FILTER ────────────────────────────────────
+    // â”€â”€â”€ DIVERSITY FILTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     applyDiversityFilter<T extends { city?: string; age?: number; [key: string]: any }>(
         profiles: T[],
@@ -618,7 +650,7 @@ export class MatchingService {
         return result;
     }
 
-    // ─── BARAKA METER ──────────────────────────────────────
+    // â”€â”€â”€ BARAKA METER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async getBaraka(userId: string, targetUserId: string): Promise<any> {
         const [myProfile, targetProfile] = await Promise.all([
@@ -675,7 +707,7 @@ export class MatchingService {
         let family = 0;
         let interests = 0;
 
-        // ── Prayer & Faith (30 pts) ──
+        // â”€â”€ Prayer & Faith (30 pts) â”€â”€
         // Religious level match (15 pts)
         if (a.religiousLevel && b.religiousLevel) {
             if (a.religiousLevel === b.religiousLevel) prayer += 15;
@@ -697,7 +729,7 @@ export class MatchingService {
             else prayer += 2;
         }
 
-        // ── Intentions (25 pts) ──
+        // â”€â”€ Intentions (25 pts) â”€â”€
         // Marriage intention match (15 pts)
         if (a.marriageIntention && b.marriageIntention) {
             if (a.marriageIntention === b.marriageIntention) intentions += 15;
@@ -716,7 +748,7 @@ export class MatchingService {
             else intentions += 3;
         }
 
-        // ── Lifestyle (20 pts) ──
+        // â”€â”€ Lifestyle (20 pts) â”€â”€
         let lifestyleMatches = 0;
         let lifestyleChecked = 0;
         if (a.dietary && b.dietary) { lifestyleChecked++; if (a.dietary === b.dietary) lifestyleMatches++; }
@@ -730,7 +762,7 @@ export class MatchingService {
             lifestyle = 10; // neutral if no data
         }
 
-        // ── Family Values (15 pts) ──
+        // â”€â”€ Family Values (15 pts) â”€â”€
         if (a.familyPlans && b.familyPlans) {
             if (a.familyPlans === b.familyPlans) family += 8;
             else family += 3;
@@ -741,7 +773,7 @@ export class MatchingService {
             family += Math.min(Math.round((overlap.length / Math.max(a.familyValues.length, b.familyValues.length)) * 3), 3);
         }
 
-        // ── Shared Interests (10 pts) ──
+        // â”€â”€ Shared Interests (10 pts) â”€â”€
         if (a.interests?.length && b.interests?.length) {
             const overlap = a.interests.filter(i => b.interests.includes(i));
             interests = Math.min(Math.round((overlap.length / Math.max(a.interests.length, b.interests.length)) * 10), 10);
@@ -751,7 +783,7 @@ export class MatchingService {
         return { prayer, intentions, lifestyle, family, interests, total };
     }
 
-    // ─── ICE BREAKERS ────────────────────────────────────────
+    // â”€â”€â”€ ICE BREAKERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async getIceBreakers(userId: string, targetUserId: string): Promise<string[]> {
         const [myProfile, targetProfile] = await Promise.all([
@@ -769,7 +801,7 @@ export class MatchingService {
             if (shared.length > 0) {
                 breakers.push(`I noticed we both enjoy ${shared[0]}! What got you into it?`);
                 if (shared.length > 1) {
-                    breakers.push(`We share a love for ${shared[0]} and ${shared[1]} — that's a great foundation!`);
+                    breakers.push(`We share a love for ${shared[0]} and ${shared[1]} â€” that's a great foundation!`);
                 }
             }
         }
@@ -781,7 +813,7 @@ export class MatchingService {
 
         // Education-based
         if (myProfile.education && targetProfile.education && myProfile.education === targetProfile.education) {
-            breakers.push(`We both have a background in ${myProfile.education.replace('_', ' ')} — what did you study?`);
+            breakers.push(`We both have a background in ${myProfile.education.replace('_', ' ')} â€” what did you study?`);
         }
 
         // Faith-based (always respectful)
@@ -803,7 +835,7 @@ export class MatchingService {
         ];
     }
 
-    // ─── HELPERS ────────────────────────────────────────────
+    // â”€â”€â”€ HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private async getExcludeIds(userId: string): Promise<string[]> {
         const blockedUsers = await this.blockedUserRepository.find({
