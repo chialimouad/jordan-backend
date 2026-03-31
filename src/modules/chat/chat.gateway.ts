@@ -172,10 +172,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @SubscribeMessage('sendMessage')
     async handleSendMessage(
         @ConnectedSocket() client: Socket,
-        @MessageBody() payload: { conversationId: string; content: string; type?: string; imageUrl?: string },
+        @MessageBody() payload: { conversationId: string; content: string; type?: string; imageUrl?: string; clientMsgId?: string },
     ) {
         const senderId = client.data.userId;
-        const { conversationId, content, type, imageUrl } = payload;
+        const { conversationId, content, type, imageUrl, clientMsgId } = payload;
 
         try {
             // Determine message type
@@ -215,12 +215,13 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
                 status: message.status,
                 createdAt: message.createdAt,
                 flagged,
+                clientMsgId,
             });
 
             // Send notification to the other participant if they are offline
             this.sendMessageNotification(senderId, conversationId, message.content).catch(() => {});
 
-            return { success: true, messageId: message.id, flagged };
+            return { success: true, messageId: message.id, flagged, clientMsgId };
         } catch (error) {
             return { success: false, error: (error as Error).message };
         }
