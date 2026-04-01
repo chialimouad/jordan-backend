@@ -44,17 +44,12 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         private readonly trustSafetyService?: TrustSafetyService,
     ) { }
 
-    // ─── REDIS ADAPTER FOR HORIZONTAL SCALING ────────────────
-
     afterInit(server: Server) {
         this.logger.log('Socket.IO running in single-instance mode (in-memory)');
     }
 
-    // ─── CONNECTION LIFECYCLE ───────────────────────────────
-
     async handleConnection(client: Socket) {
         try {
-            // Extract JWT from auth object (sent by Flutter client)
             const token = client.handshake.auth?.token as string;
             if (!token) {
                 this.logger.warn('Socket connection rejected: no token provided');
@@ -63,7 +58,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
                 return;
             }
 
-            // Verify the JWT and extract userId from payload
             let payload: any;
             try {
                 payload = this.jwtService.verify(token, {
@@ -83,32 +77,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
                 return;
             }
 
-            // Check if token is blacklisted (logout / session revocation)
-            if (payload.jti) {
-                const isBlacklisted = await this.redisService.isTokenBlacklisted(payload.jti);
-                if (isBlacklisted) {
-                    this.logger.warn(`Socket connection rejected: token ${payload.jti} is blacklisted`);
-                    client.emit('error', { message: 'Token has been revoked' });
-                    client.disconnect();
-                    return;
-                }
-            }
-
-            // Check global session revocation
-            const revokedAt = await this.redisService.getUserRevokedAt(userId);
-            if (revokedAt && payload.iat && payload.iat * 1000 < revokedAt) {
-                this.logger.warn(`Socket rejected: token issued before session revocation for ${userId}`);
-                client.emit('error', { message: 'Session has been revoked. Please re-login.' });
-                client.disconnect();
-                return;
-            }
-
             client.data.userId = userId;
             await this.redisService.setUserOnline(userId);
             client.join(`user:${userId}`);
 
             this.logger.log(`Client connected (JWT verified): ${userId}`);
-            // Emit presence only to user's own room (privacy — not broadcast to all)
             this.server.to(`user:${userId}`).emit('userOnline', { userId, timestamp: new Date() });
         } catch (error) {
             this.logger.error(`Socket connection error: ${(error as Error).message}`);
@@ -120,14 +93,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         const userId = client.data?.userId;
         if (userId) {
             await this.redisService.setUserOffline(userId);
-            // Store last seen timestamp
             await this.redisService.set(`lastSeen:${userId}`, new Date().toISOString(), 86400 * 30);
             this.server.to(`user:${userId}`).emit('userOffline', { userId, lastSeen: new Date() });
             this.logger.log(`Client disconnected: ${userId}`);
         }
     }
-
-    // ─── CONVERSATION ROOMS ─────────────────────────────────
 
     @SubscribeMessage('joinConversation')
     async handleJoinConversation(
@@ -135,8 +105,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         @MessageBody() payload: { conversationId: string },
     ) {
         const userId = client.data.userId;
-
-        // Verify the user is actually a participant in this conversation
         try {
             await this.chatService.getMessages(userId, payload.conversationId, { page: 1, limit: 1 } as any);
         } catch {
@@ -145,8 +113,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         }
 
         client.join(`conversation:${payload.conversationId}`);
-
-        // Auto-mark messages as delivered when joining
         try {
             await this.chatService.markAsDelivered(userId, payload.conversationId);
             client.to(`conversation:${payload.conversationId}`).emit('messagesDelivered', {
@@ -167,8 +133,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         return { success: true };
     }
 
-    // ─── SEND MESSAGE ───────────────────────────────────────
-
     @SubscribeMessage('sendMessage')
     async handleSendMessage(
         @ConnectedSocket() client: Socket,
@@ -178,11 +142,9 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         const { conversationId, content, type, imageUrl, clientMsgId } = payload;
 
         try {
-            // Determine message type
             const msgType = MessageType.TEXT;
             let msgContent = content;
 
-            // Content moderation for text messages
             let flagged = false;
             if (msgType === MessageType.TEXT && this.trustSafetyService) {
                 const moderation = await this.trustSafetyService.moderateMessage(senderId, '', msgContent);
@@ -199,27 +161,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
                 msgType,
             );
 
-            // If flagged, run async moderation update with the actual message ID
-            if (flagged && this.trustSafetyService) {
-                // Re-flag with proper entity ID (fire-and-forget)
-                this.trustSafetyService.moderateMessage(senderId, message.id, content).catch(() => {});
-            }
-
-            // Emit to the conversation room
-            this.server.to(`conversation:${conversationId}`).emit('newMessage', {
-                id: message.id,
-                conversationId: message.conversationId,
-                senderId: message.senderId,
-                content: message.content,
-                type: message.type,
-                status: message.status,
-                createdAt: message.createdAt,
-                flagged,
-                clientMsgId,
-            });
-
-            // Send notification to the other participant if they are offline
-            this.sendMessageNotification(senderId, conversationId, message.content).catch(() => {});
+            // Broadcast the message to participants (including their individual user rooms)
+            await this.broadcastMessage(message, clientMsgId);
 
             return { success: true, messageId: message.id, flagged, clientMsgId };
         } catch (error) {
@@ -227,27 +170,55 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         }
     }
 
-    /**
-     * Check if the recipient is in the conversation room; if not, send a DB notification.
-     */
+    async broadcastMessage(message: any, clientMsgId?: string) {
+        const { conversationId, senderId } = message;
+
+        // Emit to the conversation room (for active chat UI)
+        this.server.to(`conversation:${conversationId}`).emit('newMessage', {
+            id: message.id,
+            conversationId: message.conversationId,
+            senderId: message.senderId,
+            content: message.content,
+            type: message.type,
+            status: message.status,
+            createdAt: message.createdAt,
+            clientMsgId,
+        });
+
+        // Also emit to individual user rooms (for notifications or background updates)
+        const participants = await this.chatService.getConversationParticipants(conversationId);
+        if (participants) {
+            const recipientId = participants.find(id => id !== senderId);
+            if (recipientId) {
+                this.server.to(`user:${recipientId}`).emit('newMessage', {
+                    id: message.id,
+                    conversationId: message.conversationId,
+                    senderId: message.senderId,
+                    content: message.content,
+                    type: message.type,
+                    status: message.status,
+                    createdAt: message.createdAt,
+                    clientMsgId,
+                });
+            }
+        }
+
+        // Send push notification if they are offline/not in room
+        this.sendMessageNotification(senderId, conversationId, message.content).catch(() => {});
+    }
+
     private async sendMessageNotification(senderId: string, conversationId: string, content: string): Promise<void> {
         try {
-            // Get sockets in the conversation room
             const room = this.server.in(`conversation:${conversationId}`);
             const sockets = await room.fetchSockets();
             const connectedUserIds = sockets.map(s => s.data?.userId).filter(Boolean);
 
-            // Find the other participant(s) not currently in the room
-            // We need to look up the conversation to find the other user
             const conversation = await this.chatService.getConversationParticipants(conversationId);
             if (!conversation) return;
 
             const recipientIds = conversation.filter(id => id !== senderId && !connectedUserIds.includes(id));
 
             for (const recipientId of recipientIds) {
-                // Check if user is online at all (connected to the main namespace)
-                const isOnline = await this.redisService.isUserOnline(recipientId);
-                // Always store notification for offline users or users not in the conversation room
                 this.notificationsService.createNotification(recipientId, {
                     type: 'message',
                     title: 'New message',
@@ -259,8 +230,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             this.logger.error(`Failed to send message notification: ${(error as Error).message}`);
         }
     }
-
-    // ─── TYPING INDICATORS ──────────────────────────────────
 
     @SubscribeMessage('typing')
     async handleTyping(
@@ -286,8 +255,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         });
     }
 
-    // ─── MESSAGE STATUS ─────────────────────────────────────
-
     @SubscribeMessage('markRead')
     async handleMarkRead(
         @ConnectedSocket() client: Socket,
@@ -296,7 +263,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         const userId = client.data.userId;
         try {
             await this.chatService.markAsRead(userId, payload.conversationId);
-            // Emit both event names for backward compatibility
             const readPayload = {
                 conversationId: payload.conversationId,
                 readBy: userId,
@@ -305,7 +271,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             client.to(`conversation:${payload.conversationId}`).emit('messagesRead', readPayload);
             return { success: true };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: (error as Error).message };
         }
     }
 
@@ -323,11 +289,9 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             });
             return { success: true };
         } catch (error) {
-            return { success: false, error: error.message };
+            return { success: false, error: (error as Error).message };
         }
     }
-
-    // ─── PRESENCE ───────────────────────────────────────────
 
     @SubscribeMessage('checkOnline')
     async handleCheckOnline(

@@ -1,6 +1,7 @@
 import {
     Controller,
     Get,
+    Post,
     Patch,
     Param,
     Query,
@@ -37,6 +38,38 @@ export class ChatController {
         @Query() pagination: PaginationDto,
     ) {
         return this.chatService.getMessages(userId, conversationId, pagination);
+    }
+
+    @Post('conversations/:conversationId/messages')
+    @ApiOperation({ summary: 'Send a message via HTTP (fallback for socket)' })
+    async sendMessage(
+        @CurrentUser('sub') userId: string,
+        @Param('conversationId') conversationId: string,
+        @Body() body: { content: string; type?: string },
+    ) {
+        const message = await this.chatService.sendMessage(
+            userId,
+            conversationId,
+            body.content,
+        );
+        return {
+            id: message.id,
+            conversationId: message.conversationId,
+            senderId: message.senderId,
+            content: message.content,
+            type: message.type,
+            status: message.status,
+            createdAt: message.createdAt,
+        };
+    }
+
+    @Post('conversations')
+    @ApiOperation({ summary: 'Find or create a conversation with a target user' })
+    async findOrCreateConversation(
+        @CurrentUser('sub') userId: string,
+        @Body('targetUserId') targetUserId: string,
+    ) {
+        return this.chatService.findOrCreateConversation(userId, targetUserId);
     }
 
     @Patch('conversations/:conversationId/read')

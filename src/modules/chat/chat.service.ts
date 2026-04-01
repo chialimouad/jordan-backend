@@ -36,6 +36,31 @@ export class ChatService {
     ) { }
 
     // ─── CONVERSATIONS LIST ─────────────────────────────────
+    async findById(id: string): Promise<Conversation | null> {
+        return this.conversationRepository.findOne({ where: { id, isActive: true } });
+    }
+
+    async findOrCreateConversation(user1Id: string, user2Id: string): Promise<Conversation> {
+        // Enforce consistent ordering of IDs to avoid duplicates
+        const [id1, id2] = [user1Id, user2Id].sort();
+
+        let conversation = await this.conversationRepository.findOne({
+            where: { user1Id: id1, user2Id: id2, isActive: true },
+        });
+
+        if (!conversation) {
+            conversation = this.conversationRepository.create({
+                user1Id: id1,
+                user2Id: id2,
+                isActive: true,
+                user1UnreadCount: 0,
+                user2UnreadCount: 0,
+            });
+            conversation = await this.conversationRepository.save(conversation);
+        }
+
+        return conversation;
+    }
 
     async getConversations(userId: string, pagination: PaginationDto) {
         const [conversations, total] = await this.conversationRepository.findAndCount({
@@ -152,6 +177,19 @@ export class ChatService {
                 ? { user2UnreadCount: () => '"user2UnreadCount" + 1' }
                 : { user1UnreadCount: () => '"user1UnreadCount" + 1' }),
         } as any);
+
+        // Real-time broadcast (for users on Socket)
+        this.chatGateway.broadcastMessage({
+            id: saved.id,
+            conversationId: saved.conversationId,
+            senderId: saved.senderId,
+            content: saved.content,
+            type: saved.type,
+            status: saved.status,
+            createdAt: saved.createdAt,
+        }).catch(err => {
+            console.error('Failed to broadcast message:', err);
+        });
 
         return saved;
     }
