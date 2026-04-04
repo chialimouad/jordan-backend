@@ -146,7 +146,7 @@ export class SwipesService {
         return { liked: isPositive, matched: false, action };
     }
 
-    // ─── WHO LIKED ME (premium feature) ─────────────────────
+    // ??? WHO LIKED ME (premium feature) ?????????????????????
 
     async getWhoLikedMe(userId: string) {
         const isPremium = await this.isPremiumUser(userId);
@@ -179,7 +179,7 @@ export class SwipesService {
         };
     }
 
-    // ─── REWIND (Undo last swipe) ─────────────────────────────
+    // ??? REWIND (Undo last swipe) ?????????????????????????????
 
     async rewind(userId: string) {
         // Find the user's most recent swipe
@@ -223,7 +223,7 @@ export class SwipesService {
         };
     }
 
-    // ─── COMPATIBILITY ALGORITHM ────────────────────────────
+    // ??? COMPATIBILITY ALGORITHM ????????????????????????????
     // Weighted: religion 40%, marriage intentions 25%, lifestyle 20%, hobbies 15%
 
     async getCompatibilityScore(userId: string, targetUserId: string): Promise<number> {
@@ -294,7 +294,7 @@ export class SwipesService {
         return Math.min(100, score);
     }
 
-    // ─── PRIVATE HELPERS ────────────────────────────────────
+    // ??? PRIVATE HELPERS ????????????????????????????????????
 
     private async createMatch(user1Id: string, user2Id: string): Promise<Match> {
         const [first, second] = [user1Id, user2Id].sort();
@@ -381,24 +381,7 @@ export class SwipesService {
             ]),
         );
     }
-
-    // ─── REMATCH / SECOND CHANCE (premium feature) ────────
-
-    private async invalidateDiscoveryCaches(...userIds: string[]): Promise<void> {
-        const uniqueIds = [
-            ...new Set(userIds.map((id) => id?.trim()).filter((id): id is string => !!id)),
-        ];
-        if (uniqueIds.length === 0) return;
-
-        await Promise.all(
-            uniqueIds.flatMap((id) => [
-                this.redisService.del(`excludeIds:${id}`),
-                this.redisService.del(`discovery:${id}`),
-                this.redisService.del(`suggestions:${id}`),
-                this.redisService.delByPattern(`search:${id}:*`),
-            ]),
-        );
-    }
+    // Rematch / second chance (premium feature)
 
     async requestRematch(userId: string, targetUserId: string, message?: string) {
         // Verify premium feature
