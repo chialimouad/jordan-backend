@@ -168,6 +168,12 @@ export class UsersService {
     async isUsernameAvailable(username: string): Promise<boolean> {
         const user = await this.userRepository.findOne({
             where: { username: username.toLowerCase() },
+            select: {
+                id: true,
+                username: true,
+                status: true,
+                emailVerified: true,
+            },
         });
         if (!user) return true;
         // Username held by an unverified user is considered available

@@ -67,8 +67,9 @@ export class ResendOtpDto {
 
 export class LoginDto {
     @ApiProperty({ example: 'user@example.com', description: 'Email, username, or phone number' })
+    @IsOptional()
     @IsString()
-    identifier: string;
+    identifier?: string;
 
     @ApiPropertyOptional({ example: 'user@example.com', deprecated: true, description: 'Deprecated alias for identifier' })
     @IsOptional()
