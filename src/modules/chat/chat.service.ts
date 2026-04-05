@@ -342,7 +342,7 @@ export class ChatService {
                     email: '',
                     firstName: user.firstName,
                     lastName: user.lastName,
-                    phoneVerified: user.phoneVerified,
+                    phoneVerified: user.phoneVerified ?? false,
                     selfieVerified: user.selfieVerified,
                     status: onlineSet.has(user.id) ? 'online' : 'active',
                     isOnline: onlineSet.has(user.id),

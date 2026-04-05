@@ -64,8 +64,9 @@ export class User {
     @Column({ default: false })
     emailVerified: boolean;
 
-    @Column({ default: false })
-    phoneVerified: boolean;
+    // Legacy field kept in the app contract, but not mapped to Postgres because
+    // the production database does not have this column.
+    phoneVerified?: boolean;
 
     // OTP fields
     @Column({ nullable: true, select: false })
