@@ -68,20 +68,45 @@ export function createDefaultVerificationState(): UserVerificationState {
     };
 }
 
+function isVerificationStatus(value: unknown): value is VerificationStatus {
+    return Object.values(VerificationStatus).includes(value as VerificationStatus);
+}
+
+function normalizeVerificationItem(
+    value: Partial<UserVerificationItem> | VerificationStatus | string | null | undefined,
+    defaults: UserVerificationItem,
+): UserVerificationItem {
+    if (typeof value === 'string') {
+        return {
+            ...defaults,
+            status: isVerificationStatus(value) ? value : defaults.status,
+        };
+    }
+
+    const normalized = {
+        ...defaults,
+        ...(value ?? {}),
+    };
+
+    return {
+        ...normalized,
+        status: isVerificationStatus(normalized.status) ? normalized.status : defaults.status,
+    };
+}
+
 export function normalizeVerificationState(
-    verification?: Partial<UserVerificationState> | null,
+    verification?:
+        | Partial<{
+              selfie: Partial<UserVerificationItem> | VerificationStatus | string | null;
+              marital_status: Partial<UserVerificationItem> | VerificationStatus | string | null;
+          }>
+        | null,
 ): UserVerificationState {
     const defaults = createDefaultVerificationState();
 
     return {
-        selfie: {
-            ...defaults.selfie,
-            ...(verification?.selfie ?? {}),
-        },
-        marital_status: {
-            ...defaults.marital_status,
-            ...(verification?.marital_status ?? {}),
-        },
+        selfie: normalizeVerificationItem(verification?.selfie, defaults.selfie),
+        marital_status: normalizeVerificationItem(verification?.marital_status, defaults.marital_status),
     };
 }
 

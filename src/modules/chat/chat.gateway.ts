@@ -221,9 +221,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             for (const recipientId of recipientIds) {
                 this.notificationsService.createNotification(recipientId, {
                     type: 'message',
+                    userId: senderId,
+                    conversationId,
                     title: 'New message',
                     body: content.length > 80 ? content.substring(0, 80) + '...' : content,
-                    data: { conversationId, senderId },
+                    extraData: { senderId },
                 }).catch(() => {});
             }
         } catch (error) {

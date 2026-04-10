@@ -20,6 +20,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         let status = HttpStatus.INTERNAL_SERVER_ERROR;
         let message = 'Internal server error';
         let errors: any = null;
+        let businessStatus: string | null = null;
 
         if (exception instanceof HttpException) {
             status = exception.getStatus();
@@ -31,6 +32,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
                 const resp = exceptionResponse as any;
                 message = resp.message || message;
                 errors = resp.errors || null;
+                businessStatus = typeof resp.status === 'string' ? resp.status : null;
             }
         } else if (exception instanceof Error) {
             // Log full error internally but never expose to client
@@ -47,6 +49,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         response.status(status).json({
             success: false,
             statusCode: status,
+            status: businessStatus,
             message,
             errors,
             timestamp: new Date().toISOString(),

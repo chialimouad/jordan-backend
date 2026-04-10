@@ -5,19 +5,20 @@ import { SwipesService } from './swipes.service';
 import { Like } from '../../database/entities/like.entity';
 import { Match } from '../../database/entities/match.entity';
 import { BlockedUser } from '../../database/entities/blocked-user.entity';
-import { Subscription } from '../../database/entities/subscription.entity';
 import { Profile } from '../../database/entities/profile.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { Conversation } from '../../database/entities/conversation.entity';
 import { RematchRequest } from '../../database/entities/rematch-request.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { MonetizationModule } from '../monetization/monetization.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([Like, Match, BlockedUser, Subscription, Profile, UserPreference, Conversation, RematchRequest]),
+        TypeOrmModule.forFeature([Like, Match, BlockedUser, Profile, UserPreference, Conversation, RematchRequest]),
         NotificationsModule,
         MonetizationModule,
+        SubscriptionsModule,
     ],
     controllers: [SwipesController],
     providers: [SwipesService],

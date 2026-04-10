@@ -6,7 +6,6 @@ import {
     HttpException,
     HttpStatus,
     Logger,
-    ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -410,12 +409,16 @@ export class AuthService {
         }
 
         if (!user.emailVerified && user.status === UserStatus.PENDING_VERIFICATION) {
-            throw new UnauthorizedException('Please verify your email first');
+            this.throwAuthStatusException(
+                user.status,
+                'Please verify your email first',
+                HttpStatus.UNAUTHORIZED,
+            );
         }
 
         const blockedLoginMessage = this.getBlockedLoginMessage(user.status);
         if (blockedLoginMessage) {
-            throw new ForbiddenException(blockedLoginMessage);
+            this.throwAuthStatusException(user.status, blockedLoginMessage, HttpStatus.FORBIDDEN);
         }
 
         await this.subscriptionsService.syncUserPremiumState(user.id);
@@ -438,6 +441,8 @@ export class AuthService {
         this.logger.log(`User logged in: ${identifier} from ${clientIp}`);
 
         return {
+            status: UserStatus.ACTIVE,
+            message: 'Login successful',
             user: this.sanitizeUser(await this.usersService.getMe(user.id)),
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
@@ -468,7 +473,7 @@ export class AuthService {
 
             const blockedLoginMessage = this.getBlockedLoginMessage(user.status);
             if (blockedLoginMessage) {
-                throw new ForbiddenException(blockedLoginMessage);
+                this.throwAuthStatusException(user.status, blockedLoginMessage, HttpStatus.FORBIDDEN);
             }
 
             this.logger.log(`[GoogleSignIn] Existing user found: ${user.id}`);
@@ -547,6 +552,8 @@ export class AuthService {
         this.logger.log(`[GoogleSignIn] User authenticated: ${email} from ${clientIp}`);
 
         return {
+            status: UserStatus.ACTIVE,
+            message: 'Login successful',
             user: this.sanitizeUser(await this.usersService.getMe(user.id)),
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
@@ -778,12 +785,16 @@ export class AuthService {
         }
 
         if (!user.emailVerified && user.status === UserStatus.PENDING_VERIFICATION) {
-            throw new UnauthorizedException('Please verify your email first');
+            this.throwAuthStatusException(
+                user.status,
+                'Please verify your email first',
+                HttpStatus.UNAUTHORIZED,
+            );
         }
 
         const blockedLoginMessage = this.getBlockedLoginMessage(user.status);
         if (blockedLoginMessage) {
-            throw new ForbiddenException(blockedLoginMessage);
+            this.throwAuthStatusException(user.status, blockedLoginMessage, HttpStatus.FORBIDDEN);
         }
 
         await this.subscriptionsService.syncUserPremiumState(user.id);
@@ -926,7 +937,7 @@ export class AuthService {
             case UserStatus.PENDING_VERIFICATION:
                 return 'Your account is under review';
             case UserStatus.REJECTED:
-                return 'Verification rejected';
+                return 'Your verification was rejected';
             case UserStatus.BANNED:
                 return 'Your account is banned';
             case UserStatus.SUSPENDED:
@@ -937,5 +948,37 @@ export class AuthService {
             default:
                 return null;
         }
+    }
+
+    private throwAuthStatusException(
+        status: UserStatus,
+        message: string,
+        httpStatus: HttpStatus,
+    ): never {
+        const normalizedStatus = this.getAuthResponseStatus(status);
+
+        this.logger.warn(`Login blocked: status=${normalizedStatus}, reason=${message}`);
+        this.redisService.appendAuditLog({
+            type: 'login',
+            action: 'login_blocked',
+            status: normalizedStatus,
+            detail: message,
+        }).catch(() => {});
+
+        throw new HttpException(
+            {
+                status: normalizedStatus,
+                message,
+            },
+            httpStatus,
+        );
+    }
+
+    private getAuthResponseStatus(status: UserStatus): UserStatus {
+        if (status === UserStatus.DEACTIVATED) {
+            return UserStatus.SUSPENDED;
+        }
+
+        return status;
     }
 }

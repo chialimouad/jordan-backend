@@ -9,11 +9,6 @@ import { Repository } from 'typeorm';
 import { Like, LikeType } from '../../database/entities/like.entity';
 import { Match, MatchStatus } from '../../database/entities/match.entity';
 import { BlockedUser } from '../../database/entities/blocked-user.entity';
-import {
-    Subscription,
-    SubscriptionPlan,
-    SubscriptionStatus,
-} from '../../database/entities/subscription.entity';
 import { Profile } from '../../database/entities/profile.entity';
 import { UserPreference } from '../../database/entities/user-preference.entity';
 import { Conversation } from '../../database/entities/conversation.entity';
@@ -22,6 +17,7 @@ import { CreateSwipeDto, SwipeAction } from './dto/swipe.dto';
 import { RedisService } from '../redis/redis.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MonetizationService, FeatureFlag } from '../monetization/monetization.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 const FREE_DAILY_SWIPE_LIMIT = 10;
 const FREE_DAILY_SUPER_LIKE_LIMIT = 0;
@@ -37,8 +33,6 @@ export class SwipesService {
         private readonly matchRepository: Repository<Match>,
         @InjectRepository(BlockedUser)
         private readonly blockedUserRepository: Repository<BlockedUser>,
-        @InjectRepository(Subscription)
-        private readonly subscriptionRepository: Repository<Subscription>,
         @InjectRepository(Profile)
         private readonly profileRepository: Repository<Profile>,
         @InjectRepository(UserPreference)
@@ -50,6 +44,7 @@ export class SwipesService {
         private readonly redisService: RedisService,
         private readonly notificationsService: NotificationsService,
         private readonly monetizationService: MonetizationService,
+        private readonly subscriptionsService: SubscriptionsService,
     ) { }
 
     async swipe(userId: string, dto: CreateSwipeDto) {
@@ -110,27 +105,12 @@ export class SwipesService {
         await this.invalidateDiscoveryCaches(userId);
 
         // Notify target user for like actions
-        if (action === SwipeAction.LIKE) {
-            this.notificationsService.createNotification(targetUserId, {
-                type: 'like',
-                title: 'Someone liked your profile',
-                body: 'Open Methna to see who is interested in you.',
-                data: { likerId: userId },
-            }).catch(() => { });
-        } else if (action === SwipeAction.SUPER_LIKE) {
-            this.notificationsService.createNotification(targetUserId, {
-                type: 'super_like',
-                title: 'Someone Super Liked you!',
-                body: 'Someone really likes you. Check your likes!',
-                data: { likerId: userId },
-            }).catch(() => { });
-        } else if (action === SwipeAction.COMPLIMENT) {
-            this.notificationsService.createNotification(targetUserId, {
-                type: 'compliment',
-                title: 'You received a compliment!',
-                body: complimentMessage || 'Someone sent you a compliment.',
-                data: { likerId: userId },
-            }).catch(() => { });
+        if (
+            action === SwipeAction.LIKE ||
+            action === SwipeAction.SUPER_LIKE ||
+            action === SwipeAction.COMPLIMENT
+        ) {
+            this.sendLikeNotification(targetUserId, userId, action, complimentMessage).catch(() => { });
         }
 
         // If positive action, check for mutual match
@@ -322,15 +302,19 @@ export class SwipesService {
         await Promise.all([
             this.notificationsService.createNotification(user1Id, {
                 type: 'match',
+                userId: user2Id,
+                conversationId: conversation.id,
                 title: 'New Match!',
                 body: 'You have a new match! Start a conversation.',
-                data: { matchId: savedMatch.id, userId: user2Id },
+                extraData: { matchId: savedMatch.id },
             }),
             this.notificationsService.createNotification(user2Id, {
                 type: 'match',
+                userId: user1Id,
+                conversationId: conversation.id,
                 title: 'New Match!',
                 body: 'You have a new match! Start a conversation.',
-                data: { matchId: savedMatch.id, userId: user1Id },
+                extraData: { matchId: savedMatch.id },
             }),
         ]);
 
@@ -362,24 +346,50 @@ export class SwipesService {
         const cached = await this.redisService.get(cacheKey);
         if (cached !== null) return cached === '1';
 
-        const subscription = await this.subscriptionRepository.findOne({
-            where: { userId, status: 'active' as any },
-        });
-        let isPremium = !!subscription && subscription.plan !== SubscriptionPlan.FREE;
-
-        if (
-            isPremium &&
-            subscription?.endDate &&
-            new Date(subscription.endDate) <= new Date()
-        ) {
-            await this.subscriptionRepository.update(subscription.id, {
-                status: SubscriptionStatus.EXPIRED,
-            });
-            isPremium = false;
-        }
+        const isPremium = await this.subscriptionsService.isPremium(userId);
 
         await this.redisService.set(cacheKey, isPremium ? '1' : '0', 300); // 5 min TTL
         return isPremium;
+    }
+
+    private async sendLikeNotification(
+        targetUserId: string,
+        likerId: string,
+        action: SwipeAction,
+        complimentMessage?: string,
+    ): Promise<void> {
+        const recipientIsPremium = await this.isPremiumUser(targetUserId);
+        const likeKind = this.mapSwipeActionToNotificationKind(action);
+        const title = recipientIsPremium ? 'New like' : 'Someone liked you';
+        const body = recipientIsPremium
+            ? (action === SwipeAction.COMPLIMENT && complimentMessage
+                ? complimentMessage
+                : 'Open Methna to see who is interested in you.')
+            : 'Upgrade to Premium to see who liked you.';
+
+        await this.notificationsService.createNotification(targetUserId, {
+            type: 'like',
+            userId: recipientIsPremium ? likerId : '',
+            title,
+            body,
+            extraData: {
+                likeKind,
+                complimentMessage: complimentMessage || undefined,
+                isAnonymousLike: !recipientIsPremium,
+            },
+        });
+    }
+
+    private mapSwipeActionToNotificationKind(action: SwipeAction): LikeType {
+        switch (action) {
+            case SwipeAction.SUPER_LIKE:
+                return LikeType.SUPER_LIKE;
+            case SwipeAction.COMPLIMENT:
+                return LikeType.COMPLIMENT;
+            case SwipeAction.LIKE:
+            default:
+                return LikeType.LIKE;
+        }
     }
 
     private async invalidateDiscoveryCaches(...userIds: string[]): Promise<void> {

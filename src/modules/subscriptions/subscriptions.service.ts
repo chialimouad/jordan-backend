@@ -2,6 +2,7 @@ import {
     Injectable,
     NotFoundException,
     BadRequestException,
+    Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -15,6 +16,8 @@ import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class SubscriptionsService {
+    private readonly logger = new Logger(SubscriptionsService.name);
+
     constructor(
         @InjectRepository(Subscription)
         private readonly subscriptionRepository: Repository<Subscription>,
@@ -223,6 +226,9 @@ export class SubscriptionsService {
                 await this.subscriptionRepository.update(subscription.id, {
                     status: SubscriptionStatus.EXPIRED,
                 });
+                this.logger.log(
+                    `Premium expired for user ${subscription.userId} at ${new Date(subscription.endDate).toISOString()}`,
+                );
                 expiredUserIds.add(subscription.userId);
             }
         }
@@ -234,6 +240,9 @@ export class SubscriptionsService {
 
         for (const user of expiredUsers) {
             if (user.premiumExpiryDate && new Date(user.premiumExpiryDate) <= now) {
+                this.logger.log(
+                    `Premium expired for user ${user.id} at ${new Date(user.premiumExpiryDate).toISOString()}`,
+                );
                 expiredUserIds.add(user.id);
             }
         }
@@ -311,6 +320,9 @@ export class SubscriptionsService {
             await this.subscriptionRepository.update(activeSubscription.id, {
                 status: SubscriptionStatus.EXPIRED,
             });
+            this.logger.log(
+                `Premium expired for user ${userId} at ${new Date(activeSubscription.endDate).toISOString()}`,
+            );
         }
 
         await this.updateUserPremiumState(userId, false, null, null);

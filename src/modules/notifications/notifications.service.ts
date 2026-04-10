@@ -28,8 +28,29 @@ type PushEligibleUser = Pick<
     | 'surveyNotifications'
 >;
 
+type NotificationInput = {
+    userId?: string;
+    conversationId?: string;
+    extraData?: Record<string, any>;
+    type: string;
+    title: string;
+    body: string;
+    data?: Record<string, any>;
+};
+
+type NotificationPayload = {
+    type: string;
+    userId?: string;
+    conversationId?: string;
+    title: string;
+    body: string;
+    extraData: Record<string, any>;
+};
+
 type NormalizedNotificationPayload = {
     storedType: NotificationType;
+    clientType: string;
+    payload: NotificationPayload;
     data: Record<string, any>;
 };
 
@@ -51,25 +72,21 @@ export class NotificationsService {
 
     async createNotification(
         userId: string,
-        data: {
-            userId?: string;
-            conversationId?: string;
-            extraData?: Record<string, any>;
-            type: string;
-            title: string;
-            body: string;
-            data?: Record<string, any>;
-        },
+        data: NotificationInput,
     ): Promise<Notification> {
         const normalized = this.normalizeNotificationPayload(userId, data);
         const notification = this.notificationRepository.create({
             userId,
             type: normalized.storedType,
-            title: data.title,
-            body: data.body,
+            title: normalized.payload.title,
+            body: normalized.payload.body,
             data: normalized.data,
         });
         const saved = await this.notificationRepository.save(notification);
+
+        this.logger.log(
+            `Notification sent to user ${userId}: type=${normalized.clientType}, payload=${JSON.stringify(normalized.payload)}`,
+        );
 
         this.notificationGateway.sendToUser(userId, saved);
         this.dispatchPushNotification(userId, saved).catch((error: Error) => {
@@ -126,92 +143,107 @@ export class NotificationsService {
 
     private normalizeNotificationPayload(
         targetUserId: string,
-        data: {
-            userId?: string;
-            conversationId?: string;
-            extraData?: Record<string, any>;
-            type: string;
-            title: string;
-            body: string;
-            data?: Record<string, any>;
-        },
+        data: NotificationInput,
     ): NormalizedNotificationPayload {
-        const clientType = (data.type || NotificationType.SYSTEM).trim().toLowerCase();
-        const storedType = this.mapNotificationTypeForStorage(clientType);
+        const rawType = (data.type || NotificationType.SYSTEM).trim().toLowerCase();
+        const { clientType, storedType } = this.normalizeNotificationType(rawType);
         const payloadData = { ...(data.data ?? {}) };
         const conversationId =
-            data.conversationId?.toString().trim() ||
-            payloadData.conversationId?.toString().trim() ||
-            null;
+            this.normalizeOptionalString(data.conversationId) ||
+            this.normalizeOptionalString(payloadData.conversationId) ||
+            undefined;
 
         delete payloadData.conversationId;
 
-        const payloadUserId =
-            data.userId?.toString().trim() ||
-            payloadData.userId?.toString().trim() ||
-            payloadData.senderId?.toString().trim() ||
-            payloadData.likerId?.toString().trim() ||
-            payloadData.requesterId?.toString().trim() ||
-            targetUserId;
+        let payloadUserId =
+            this.normalizeOptionalString(data.userId) ||
+            this.normalizeOptionalString(payloadData.userId) ||
+            this.normalizeOptionalString(payloadData.senderId) ||
+            this.normalizeOptionalString(payloadData.likerId) ||
+            this.normalizeOptionalString(payloadData.requesterId) ||
+            this.normalizeOptionalString(payloadData.viewerId);
 
         delete payloadData.userId;
         delete payloadData.senderId;
         delete payloadData.likerId;
         delete payloadData.requesterId;
+        delete payloadData.viewerId;
 
         const extraData = {
-            ...(data.extraData ?? {}),
             ...payloadData,
+            ...(data.extraData ?? {}),
         };
 
-        if (clientType !== storedType) {
-            extraData.originalType = clientType;
+        if (rawType !== clientType) {
+            extraData.originalType = rawType;
         }
+
+        if (clientType === NotificationType.LIKE && extraData.isAnonymousLike === true && !payloadUserId) {
+            payloadUserId = '';
+        }
+
+        const payload = this.enforceNotificationPayload({
+            type: clientType,
+            userId: payloadUserId,
+            conversationId,
+            title: data.title,
+            body: data.body,
+            extraData,
+        });
 
         return {
             storedType,
+            clientType,
+            payload,
             data: {
-                payload: {
-                    type: clientType,
-                    userId: payloadUserId,
-                    conversationId,
-                    extraData,
-                },
+                type: payload.type,
+                userId: payload.userId,
+                conversationId: payload.conversationId,
+                title: payload.title,
+                body: payload.body,
+                extraData: payload.extraData,
+                payload,
             },
         };
     }
 
-    private mapNotificationTypeForStorage(type: string): NotificationType {
+    private normalizeNotificationType(type: string): { clientType: string; storedType: NotificationType } {
         switch (type) {
             case NotificationType.MATCH:
-                return NotificationType.MATCH;
+                return { clientType: NotificationType.MATCH, storedType: NotificationType.MATCH };
             case NotificationType.MESSAGE:
-                return NotificationType.MESSAGE;
+                return { clientType: NotificationType.MESSAGE, storedType: NotificationType.MESSAGE };
             case NotificationType.LIKE:
             case 'super_like':
             case 'compliment':
-                return NotificationType.LIKE;
+                return { clientType: NotificationType.LIKE, storedType: NotificationType.LIKE };
             case NotificationType.SUBSCRIPTION:
-                return NotificationType.SUBSCRIPTION;
+                return { clientType: NotificationType.SUBSCRIPTION, storedType: NotificationType.SUBSCRIPTION };
             case NotificationType.TICKET:
             case 'support':
             case 'support_reply':
-                return NotificationType.TICKET;
+                return { clientType: NotificationType.TICKET, storedType: NotificationType.TICKET };
             case NotificationType.PROFILE_VIEW:
-                return NotificationType.PROFILE_VIEW;
+                return { clientType: NotificationType.PROFILE_VIEW, storedType: NotificationType.PROFILE_VIEW };
             case NotificationType.VERIFICATION:
-                return NotificationType.VERIFICATION;
+                return { clientType: NotificationType.VERIFICATION, storedType: NotificationType.VERIFICATION };
             default:
-                return NotificationType.SYSTEM;
+                return {
+                    clientType: type || NotificationType.SYSTEM,
+                    storedType: NotificationType.SYSTEM,
+                };
         }
     }
 
     private resolveClientNotificationType(notification: Notification): string {
         const rawType =
+            notification.data?.type ??
             notification.data?.payload?.type ??
             notification.data?.notificationType ??
             notification.type;
-        return rawType?.toString().trim().toLowerCase() || NotificationType.SYSTEM;
+        return this.normalizeNotificationType(
+            rawType?.toString().trim().toLowerCase() || NotificationType.SYSTEM,
+        ).clientType;
     }
 
     private async dispatchPushNotification(userId: string, notification: Notification): Promise<void> {
@@ -243,22 +275,19 @@ export class NotificationsService {
             return;
         }
 
-        try {
-            const isOnline = await this.redisService.isUserOnline(userId);
-            if (isOnline) {
-                return;
-            }
-        } catch (error) {
-            this.logger.debug(`Redis online check failed for push delivery: ${(error as Error).message}`);
-        }
-
         const payload = this.buildPushPayload(notification);
 
         if (await this.sendViaFirebaseV1(user as PushEligibleUser, payload)) {
+            this.logger.log(
+                `Push notification delivered via Firebase v1 to user ${userId}: type=${payload.data.type}, payload=${JSON.stringify(payload.data)}`,
+            );
             return;
         }
 
         if (await this.sendViaLegacyFcm(user as PushEligibleUser, payload)) {
+            this.logger.log(
+                `Push notification delivered via legacy FCM to user ${userId}: type=${payload.data.type}, payload=${JSON.stringify(payload.data)}`,
+            );
             return;
         }
 
@@ -311,20 +340,24 @@ export class NotificationsService {
         body: string;
         data: Record<string, string>;
     } {
-        const clientType = this.resolveClientNotificationType(notification);
+        const payload = this.extractNotificationPayload(notification);
         const createdAt = notification.createdAt instanceof Date
             ? notification.createdAt.toISOString()
             : new Date().toISOString();
 
         return {
-            title: notification.title,
-            body: notification.body,
+            title: payload.title,
+            body: payload.body,
             data: this.stringifyPushData({
                 notificationId: notification.id,
-                type: clientType,
                 createdAt,
-                ...(notification.data?.payload ?? {}),
-                extraData: notification.data?.payload?.extraData ?? {},
+                type: payload.type,
+                userId: payload.userId,
+                conversationId: payload.conversationId,
+                title: payload.title,
+                body: payload.body,
+                extraData: payload.extraData,
+                payload,
             }),
         };
     }
@@ -394,6 +427,8 @@ export class NotificationsService {
                         payload: {
                             aps: {
                                 sound: 'default',
+                                'content-available': 1,
+                                'mutable-content': 1,
                             },
                         },
                     },
@@ -431,6 +466,8 @@ export class NotificationsService {
             JSON.stringify({
                 to: user.fcmToken,
                 priority: 'high',
+                content_available: true,
+                mutable_content: true,
                 notification: {
                     title: payload.title,
                     body: payload.body,
@@ -585,6 +622,96 @@ export class NotificationsService {
         });
     }
 
+    private extractNotificationPayload(notification: Notification): NotificationPayload {
+        const rawPayload = notification.data?.payload ?? notification.data ?? {};
+        const extraData = this.normalizeExtraData(rawPayload.extraData ?? notification.data?.extraData);
+
+        return this.enforceNotificationPayload({
+            type: this.resolveClientNotificationType(notification),
+            userId: this.normalizeOptionalString(rawPayload.userId ?? notification.data?.userId),
+            conversationId: this.normalizeOptionalString(
+                rawPayload.conversationId ?? notification.data?.conversationId,
+            ),
+            title: rawPayload.title?.toString() || notification.title,
+            body: rawPayload.body?.toString() || notification.body,
+            extraData,
+        });
+    }
+
+    private enforceNotificationPayload(payload: NotificationPayload): NotificationPayload {
+        const normalizedPayload: NotificationPayload = {
+            ...payload,
+            userId: this.normalizeOptionalString(payload.userId),
+            conversationId: this.normalizeOptionalString(payload.conversationId),
+            title: payload.title,
+            body: payload.body,
+            extraData: this.normalizeExtraData(payload.extraData),
+        };
+
+        switch (normalizedPayload.type) {
+            case NotificationType.MATCH:
+                if (!normalizedPayload.userId) {
+                    this.logger.warn('Match notification missing userId');
+                }
+                break;
+            case NotificationType.MESSAGE:
+                if (!normalizedPayload.userId) {
+                    this.logger.warn('Message notification missing userId');
+                }
+                if (!normalizedPayload.conversationId) {
+                    this.logger.warn('Message notification missing conversationId');
+                }
+                break;
+            case NotificationType.LIKE:
+                if (!normalizedPayload.userId && normalizedPayload.extraData.isAnonymousLike !== true) {
+                    this.logger.warn('Like notification missing userId');
+                }
+                if (normalizedPayload.extraData.isAnonymousLike === true && !normalizedPayload.userId) {
+                    normalizedPayload.userId = '';
+                }
+                break;
+            case NotificationType.TICKET:
+                if (!normalizedPayload.extraData.ticketId) {
+                    this.logger.warn('Ticket notification missing extraData.ticketId');
+                }
+                break;
+            default:
+                break;
+        }
+
+        return normalizedPayload;
+    }
+
+    private normalizeExtraData(value: unknown): Record<string, any> {
+        if (!value) {
+            return {};
+        }
+
+        if (typeof value === 'string') {
+            try {
+                const parsed = JSON.parse(value);
+                return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch {
+                return {};
+            }
+        }
+
+        if (typeof value === 'object') {
+            return { ...(value as Record<string, any>) };
+        }
+
+        return {};
+    }
+
+    private normalizeOptionalString(value: unknown): string | undefined {
+        if (typeof value !== 'string') {
+            return undefined;
+        }
+
+        const trimmed = value.trim();
+        return trimmed ? trimmed : undefined;
+    }
+
     async getNotificationSettings(userId: string) {
         const user = await this.userRepository.findOne({
             where: { id: userId },
@@ -639,27 +766,32 @@ export class NotificationsService {
     async sendMatchNotification(userId: string, matchedUserName: string, data?: Record<string, any>): Promise<Notification> {
         return this.createNotification(userId, {
             type: 'match',
+            userId: this.normalizeOptionalString(data?.userId),
+            conversationId: this.normalizeOptionalString(data?.conversationId),
             title: 'New Match!',
             body: `You matched with ${matchedUserName}!`,
-            data,
+            extraData: data,
         });
     }
 
     async sendLikeNotification(userId: string, likerName: string, data?: Record<string, any>): Promise<Notification> {
         return this.createNotification(userId, {
             type: 'like',
+            userId: this.normalizeOptionalString(data?.userId ?? data?.likerId),
             title: 'Someone likes you!',
             body: `${likerName} liked your profile`,
-            data,
+            extraData: data,
         });
     }
 
     async sendMessageNotification(userId: string, senderName: string, preview: string, data?: Record<string, any>): Promise<Notification> {
         return this.createNotification(userId, {
             type: 'message',
+            userId: this.normalizeOptionalString(data?.userId ?? data?.senderId),
+            conversationId: this.normalizeOptionalString(data?.conversationId),
             title: `New message from ${senderName}`,
             body: preview.length > 80 ? preview.substring(0, 80) + '...' : preview,
-            data,
+            extraData: data,
         });
     }
 
@@ -673,7 +805,7 @@ export class NotificationsService {
             type: 'subscription',
             title,
             body,
-            data,
+            extraData: data,
         });
     }
 
@@ -687,7 +819,7 @@ export class NotificationsService {
             type: 'ticket',
             title,
             body,
-            data,
+            extraData: data,
         });
     }
 }
