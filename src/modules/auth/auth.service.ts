@@ -498,9 +498,12 @@ export class AuthService {
             this.throwAuthStatusException(user, blockedLoginMessage, HttpStatus.FORBIDDEN);
         }
 
-        await this.subscriptionsService.syncUserPremiumState(user.id);
+        const premiumState = await this.subscriptionsService.syncUserPremiumState(user.id);
 
-        const tokens = await this.generateTokens(user);
+        const [tokens, subscription] = await Promise.all([
+            this.generateTokens(user),
+            this.subscriptionsService.getMySubscription(user.id),
+        ]);
         await this.updateRefreshToken(user.id, tokens.refreshToken, tokens.familyId);
         await this.userRepository.update(user.id, {
             lastLoginAt: new Date(),
@@ -528,6 +531,16 @@ export class AuthService {
             user: this.sanitizeUser(await this.usersService.getMe(user.id)),
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
+            subscription: {
+                plan: subscription.planEntity?.code ?? subscription.plan ?? 'free',
+                planId: subscription.planId,
+                status: subscription.status,
+                startDate: subscription.startDate,
+                endDate: subscription.endDate,
+                isPremium: premiumState.isPremium,
+                premiumStartDate: premiumState.premiumStartDate,
+                premiumExpiryDate: premiumState.premiumExpiryDate,
+            },
         };
     }
 
@@ -661,10 +674,13 @@ export class AuthService {
 
         }
 
-        await this.subscriptionsService.syncUserPremiumState(user.id);
+        const premiumState = await this.subscriptionsService.syncUserPremiumState(user.id);
 
         // Generate tokens
-        const tokens = await this.generateTokens(user);
+        const [tokens, subscription] = await Promise.all([
+            this.generateTokens(user),
+            this.subscriptionsService.getMySubscription(user.id),
+        ]);
         await this.updateRefreshToken(user.id, tokens.refreshToken, tokens.familyId);
         await this.userRepository.update(user.id, {
             lastLoginAt: new Date(),
@@ -692,6 +708,16 @@ export class AuthService {
             user: this.sanitizeUser(await this.usersService.getMe(user.id)),
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
+            subscription: {
+                plan: subscription.planEntity?.code ?? subscription.plan ?? 'free',
+                planId: subscription.planId,
+                status: subscription.status,
+                startDate: subscription.startDate,
+                endDate: subscription.endDate,
+                isPremium: premiumState.isPremium,
+                premiumStartDate: premiumState.premiumStartDate,
+                premiumExpiryDate: premiumState.premiumExpiryDate,
+            },
         };
     }
 

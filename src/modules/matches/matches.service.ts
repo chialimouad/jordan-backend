@@ -92,9 +92,14 @@ export class MatchesService {
             const hasActivePremium = this.hasActivePremiumEntitlement(otherUser);
             const maskedByGhost = otherUser?.isGhostModeEnabled === true;
             const photoSet = photoMap.get(otherUserId);
+            const notifiedAt = match.user1Id === userId
+                ? match.user1NotifiedAt
+                : match.user2NotifiedAt;
             return {
                 id: match.id,
                 matchedAt: match.matchedAt,
+                seen: notifiedAt !== null,
+                notifiedAt: notifiedAt,
                 user: {
                     id: otherUser.id,
                     firstName: maskedByGhost ? 'Ghost' : otherUser.firstName,
@@ -114,6 +119,80 @@ export class MatchesService {
         });
 
         return { matches: enriched, total, page: pagination.page, limit: pagination.limit };
+    }
+
+    async markMatchSeen(userId: string, matchId: string): Promise<{ marked: boolean }> {
+        const match = await this.matchRepository.findOne({
+            where: [
+                { id: matchId, user1Id: userId },
+                { id: matchId, user2Id: userId },
+            ],
+        });
+        if (!match) throw new NotFoundException('Match not found');
+
+        const now = new Date();
+        if (match.user1Id === userId && !match.user1NotifiedAt) {
+            match.user1NotifiedAt = now;
+        } else if (match.user2Id === userId && !match.user2NotifiedAt) {
+            match.user2NotifiedAt = now;
+        }
+        await this.matchRepository.save(match);
+        return { marked: true };
+    }
+
+    async getUnseenMatches(userId: string): Promise<any[]> {
+        const matches = await this.matchRepository.find({
+            where: [
+                { user1Id: userId, status: MatchStatus.ACTIVE, user1NotifiedAt: null as any },
+                { user2Id: userId, status: MatchStatus.ACTIVE, user2NotifiedAt: null as any },
+            ],
+            relations: ['user1', 'user2'],
+            order: { matchedAt: 'DESC' },
+        });
+
+        // Filter precisely: user1 row must have null user1NotifiedAt, user2 row must have null user2NotifiedAt
+        const unseen = matches.filter(m => {
+            if (m.user1Id === userId) return m.user1NotifiedAt === null;
+            return m.user2NotifiedAt === null;
+        });
+
+        if (unseen.length === 0) return [];
+
+        const otherUserIds = unseen.map(m => m.user1Id === userId ? m.user2Id : m.user1Id);
+        const photos = otherUserIds.length > 0
+            ? await this.photoRepository
+                .createQueryBuilder('photo')
+                .where('photo.userId IN (:...otherUserIds)', { otherUserIds })
+                .andWhere('photo.isMain = :isMain', { isMain: true })
+                .andWhere('photo.moderationStatus = :approvedStatus', { approvedStatus: 'approved' })
+                .getMany()
+            : [];
+        const photoMap = new Map(
+            photos.map((photo) => {
+                const variants = CloudinaryService.buildImageUrls(photo.url);
+                return [
+                    photo.userId,
+                    { thumbnailUrl: variants.thumbnailUrl, cardUrl: variants.cardUrl },
+                ];
+            }),
+        );
+
+        return unseen.map((match) => {
+            const otherUserId = match.user1Id === userId ? match.user2Id : match.user1Id;
+            const otherUser = match.user1Id === userId ? match.user2 : match.user1;
+            const photoSet = photoMap.get(otherUserId);
+            return {
+                id: match.id,
+                matchedAt: match.matchedAt,
+                user: {
+                    id: otherUser.id,
+                    firstName: otherUser.firstName,
+                    lastName: otherUser.lastName,
+                    photo: photoSet?.thumbnailUrl || null,
+                    photoCard: photoSet?.cardUrl || null,
+                },
+            };
+        });
     }
 
     async unmatch(userId: string, matchId: string): Promise<void> {

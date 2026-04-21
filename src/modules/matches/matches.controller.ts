@@ -2,6 +2,7 @@ import {
     Controller,
     Get,
     Delete,
+    Patch,
     Param,
     Query,
     UseGuards,
@@ -29,6 +30,22 @@ export class MatchesController {
         @Query() pagination: PaginationDto,
     ) {
         return this.matchesService.getMatches(userId, pagination);
+    }
+
+    @Get('unseen')
+    @ApiOperation({ summary: 'Get matches the current user has not yet seen' })
+    async getUnseenMatches(@CurrentUser('sub') userId: string) {
+        return this.matchesService.getUnseenMatches(userId);
+    }
+
+    @Patch(':id/seen')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Mark a match as seen by the current user' })
+    async markMatchSeen(
+        @CurrentUser('sub') userId: string,
+        @Param('id') matchId: string,
+    ) {
+        return this.matchesService.markMatchSeen(userId, matchId);
     }
 
     @Get('suggestions')

@@ -42,6 +42,12 @@ export class Match {
     @Column({ type: 'enum', enum: MatchStatus, default: MatchStatus.ACTIVE })
     status: MatchStatus;
 
+    @Column({ type: 'timestamp', nullable: true })
+    user1NotifiedAt: Date | null;
+
+    @Column({ type: 'timestamp', nullable: true })
+    user2NotifiedAt: Date | null;
+
     @CreateDateColumn()
     matchedAt: Date;
 
